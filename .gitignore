@@ -1,0 +1,41 @@
+# ==========================================
+# .gitignore
+# ==========================================
+
+# 1. Secretos y Configuración Local
+.env
+*.pem
+*.key
+
+# 2. Dependencias
+node_modules/
+venv/
+env/
+.venv/
+vendor/
+
+# 3. Artefactos de compilación y caché
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+dist/
+build/
+*.exe
+
+# 4. Archivos del Sistema Operativo y Editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# 5. Artefactos de pruebas 
+coverage/
+.nyc_output/
+
+# 6. Logs de ejecución de Node
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
