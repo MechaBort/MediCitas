@@ -6,23 +6,23 @@ MediCitas is a multi-tenant SaaS platform that manage medical appointments for n
 ## Diseño de la base de datos (PostgreSQL)
 
 ### Convenciones
-- **[tenant]**: el *tenant* es la clínica. Las tablas marcadas con [tenant] contienen datos que pertenecen a una sola
+- [tenant]: el tenant es la clínica. Las tablas marcadas con [tenant] contienen datos que pertenecen a una sola
   clínica y llevan la columna `clinicId`. Las tablas sin la marca son catálogos globales (países, especialidades,
   estados de cita...) o heredan la clínica de su tabla padre (se indica como "tenant implícito").
-- **NOT NULL por defecto**: toda columna es `NOT NULL` salvo que diga explícitamente `NULL`.
-- **Extensión `btree_gist`**: el esquema debe ejecutar `CREATE EXTENSION IF NOT EXISTS btree_gist;` antes de crear
+- NOT NULL por defecto: toda columna es `NOT NULL` salvo que diga explícitamente `NULL`.
+- Extensión `btree_gist`: el esquema debe ejecutar `CREATE EXTENSION IF NOT EXISTS btree_gist;` antes de crear
   las tablas. Es necesaria para las restricciones `EXCLUDE` y los índices GiST que combinan un entero (`=`) con un
   rango (`&&`).
-- **Tipos**: las PK son `INT GENERATED ALWAYS AS IDENTITY` (`BIGINT` en tablas de alto volumen; `SMALLINT` con
+- Tipos: las PK son `INT GENERATED ALWAYS AS IDENTITY` (`BIGINT` en tablas de alto volumen; `SMALLINT` con
   valores fijos en catálogos que el código referencia por id). Todo instante es `TIMESTAMPTZ` y todo intervalo de
   tiempo es `TSTZRANGE` con límites `[inicio, fin)`.
-- **Columnas de control**: `isActive` es `DEFAULT true` (baja lógica), `createdAt` y `updatedAt` son
+- Columnas de control: `isActive` es `DEFAULT true` (baja lógica), `createdAt` y `updatedAt` son
   `DEFAULT now()`, y `updatedBy` es obligatorio. Los registros que crea el seed apuntan al usuario `Sistema`
   (userId 1). Las FKs de `updatedBy` son `DEFERRABLE INITIALLY DEFERRED` porque `Roles` y `Users` se referencian
   mutuamente: el seed inserta los roles y el usuario `Sistema` en la misma transacción y la FK se revisa al confirmar.
-- **Notación de FKs**: una FK simple se marca en la columna como `(FK → Tabla)`. Una columna que forma parte de una
+- Notación de FKs: una FK simple se marca en la columna como `(FK → Tabla)`. Una columna que forma parte de una
   FK compuesta se marca `(FK compuesta)` y la FK se declara al final de la tabla como `FK (a, b) → Tabla(x, y)`,
-  que es *una sola* FK de dos columnas.
+  que es una sola FK de dos columnas.
 - Las credenciales (contraseña, sesiones, login) viven en Keycloak, no en este modelo.
 
 ==============================================================
@@ -119,7 +119,7 @@ igual al UUID nulo (`00000000-0000-0000-0000-000000000000`, que ningún token de
 apuntándose a sí mismo. No puede iniciar sesión; solo sirve como autor de los datos iniciales.
 
 ## Professionals (especialización 1:1 de Users; tenant implícito vía Users)
-La PK es el mismo `userId`: un profesional *es* un usuario con datos extra. No guarda `clinicId`, porque ya
+La PK es el mismo `userId`: un profesional es un usuario con datos extra. No guarda `clinicId`, porque ya
 viene de `Users`. En las demás tablas, la columna `professionalId` contiene ese `userId` y lleva dos FKs:
 - `(clinicId, professionalId) → Users(clinicId, userId)`: el profesional es de la misma clínica (I5).
 - `professionalId → Professionals(userId)`: ese usuario realmente es un profesional.
@@ -136,7 +136,7 @@ viene de `Users`. En las demás tablas, la columna `professionalId` contiene ese
 
 ## SpecialtiesPerProfessionals (tenant implícito vía professionalId)
 Sin `clinicId`: las especialidades son un catálogo global y esta tabla solo se consulta a través del profesional
-(ver la regla de `clinicId` en *Normalización*).
+(ver la regla de `clinicId` en Normalización).
 - specialtyPerProfessionalId : INT GENERATED ALWAYS AS IDENTITY (PK)
 - professionalId : INT (FK → Professionals(userId))
 - specialtyId : INT (FK → Specialties)
@@ -322,8 +322,8 @@ bitácora (RF18) y los de profesionales no; y así cada FK es obligatoria en lug
 - UNIQUE (clinicId, appointmentId) - destino de las FKs compuestas
 - UNIQUE (rescheduledFromId) - una cita solo se reprograma una vez
 - CHECK ((appointmentStatusId = 4) = (cancelReason IS NOT NULL AND cancelledBy IS NOT NULL AND cancelledAt IS NOT NULL))
-- EXCLUDE USING gist (professionalId WITH =, period WITH &&) WHERE (appointmentStatusId = 1) - **I1**
-- EXCLUDE USING gist (patientId WITH =, period WITH &&) WHERE (appointmentStatusId = 1) - **I2**
+- EXCLUDE USING gist (professionalId WITH =, period WITH &&) WHERE (appointmentStatusId = 1) - I1
+- EXCLUDE USING gist (patientId WITH =, period WITH &&) WHERE (appointmentStatusId = 1) - I2
 
 Reprogramar (RF10) = en una sola transacción, pasar la cita original a `reprogramada` e insertar la nueva con
 `rescheduledFromId`. Como la original deja de estar `reservada`, su espacio sale de la restricción `EXCLUDE` en el
@@ -392,7 +392,7 @@ Protección: ningún rol de la aplicación tiene `UPDATE`, `DELETE` ni `TRUNCATE
 |        					ÍNDICES              	 	     |
 ==============================================================
 
-Postgres crea automáticamente un índice por cada PK, `UNIQUE` y `EXCLUDE`, pero **no** por cada FK. Cada índice se
+Postgres crea automáticamente un índice por cada PK, `UNIQUE` y `EXCLUDE`, pero no por cada FK. Cada índice se
 justificará con `EXPLAIN ANALYZE` de su consulta una vez cargados los datos semilla.
 
 ### Creados por restricciones (no se declaran aparte)
@@ -454,7 +454,7 @@ Se compararon dos estrategias:
 | Integridad entre clínicas | Imposible referenciar otra clínica | Se garantiza con FKs compuestas `(clinicId, id)` |
 | Escala | El catálogo de Postgres crece con cada clínica | Una sola copia de las tablas; se puede particionar por `clinicId` más adelante |
 
-**Se eligió la columna discriminadora.** El alta de clínica no requiere DDL ni privilegios elevados, el esquema se
+Se eligió la columna discriminadora. El alta de clínica no requiere DDL ni privilegios elevados, el esquema se
 mantiene una sola vez y la Etapa 2 (plataforma distribuida y analítica) parte de tablas únicas. Su debilidad, que una
 consulta olvide el filtro, se mitiga en tres capas:
 1. El `clinicId` sale siempre de la identidad (token → `Users.keycloakSub` → `Users.clinicId`), nunca de un parámetro de la petición.
@@ -465,15 +465,15 @@ Row-Level Security quedaría como una capa adicional sobre esta misma columna; n
 
 ### Normalización (1FN → 3FN)
 
-- **1FN (valores atómicos, sin grupos repetidos):** los contactos van en tablas propias en lugar de columnas
+- 1FN (valores atómicos, sin grupos repetidos): los contactos van en tablas propias en lugar de columnas
   `telefono1`, `telefono2`; las especialidades y los servicios de un profesional van en tablas puente en lugar de
   listas; cada bloque de horario es una fila, no una columna por día. Un `TSTZRANGE` se considera atómico: es un
   tipo escalar de Postgres que se compara y se indexa como una unidad, igual que una fecha.
-- **2FN (sin dependencias parciales de una clave compuesta):** todas las tablas usan una PK simple. En las tablas
+- 2FN (sin dependencias parciales de una clave compuesta): todas las tablas usan una PK simple. En las tablas
   puente se revisó la clave natural: en `SpecialtiesPerProfessionals (professionalId, specialtyId)` no hay atributos
   que dependan de solo una parte; en `ServicesPerProfessionals (professionalId, serviceId)` el `clinicId` depende solo
   de `professionalId`, y es una desnormalización deliberada (ver abajo).
-- **3FN (sin dependencias transitivas):**
+- 3FN (sin dependencias transitivas):
   - La especialidad dejó de estar en `Users` y en una tabla puente a la vez; vive solo en `SpecialtiesPerProfessionals`.
   - La zona horaria pasó de `States` a `Clinics`, que es de quien depende (RF1).
   - `Professionals` no repite la clínica: la toma de `Users`.
@@ -483,56 +483,56 @@ Row-Level Security quedaría como una capa adicional sobre esta misma columna; n
 
 ### Desnormalizaciones deliberadas
 
-1. **Regla del `clinicId`.** Se guarda `clinicId` en toda tabla que la API consulta o modifica por su propio id
+1. Regla del `clinicId`. Se guarda `clinicId` en toda tabla que la API consulta o modifica por su propio id
    (`ProfessionalSchedules`, `Blockades`, `PatientContacts`, `ProfessionalContacts`, `Appointments`, `ClinicalNotes`,
    `auditLogs`), aunque se pueda derivar del padre. Es la columna discriminadora: cada consulta filtra por ella sin
    joins, y las FKs compuestas la usan para impedir referencias entre clínicas. Las tablas que solo se leen a través
    de su padre (`SpecialtiesPerProfessionals`, `Professionals`) no la llevan.
-2. **`ServicesPerProfessionals.clinicId`.** Además de lo anterior, es la columna que comparten las dos FKs
+2. `ServicesPerProfessionals.clinicId`. Además de lo anterior, es la columna que comparten las dos FKs
    compuestas, lo que obliga a que profesional y servicio sean de la misma clínica.
-3. **Fin de la cita (`upper(Appointments.period)`).** Se puede derivar de `serviceId` + inicio. Se guarda porque
+3. Fin de la cita (`upper(Appointments.period)`). Se puede derivar de `serviceId` + inicio. Se guarda porque
    (a) la restricción `EXCLUDE` solo puede usar columnas de la propia fila, no consultar `Services`; y (b) la cita
    conserva la duración con la que se reservó aunque el servicio cambie después su duración.
-4. **`Professionals.roleId`.** Siempre vale 4; existe solo para que la FK `(userId, roleId)` garantice que el
+4. `Professionals.roleId`. Siempre vale 4; existe solo para que la FK `(userId, roleId)` garantice que el
    usuario tenga el rol `professional`.
 
 ### Concurrencia y nivel de aislamiento
 
-**Pregunta rectora: dos recepcionistas reservan el último espacio exactamente al mismo tiempo.**
+Pregunta rectora: dos recepcionistas reservan el último espacio exactamente al mismo tiempo.
 
-Se usa **READ COMMITTED**, el nivel por defecto de Postgres (hay que verificar que el ORM no lo cambie). Es
+Se usa READ COMMITTED, el nivel por defecto de Postgres (hay que verificar que el ORM no lo cambie). Es
 suficiente porque la exclusión no depende del nivel de aislamiento sino de la restricción `EXCLUDE`:
 
 1. Las dos transacciones intentan insertar una cita del mismo profesional con periodos que se solapan.
 2. La primera inserta y deja su fila en el índice del `EXCLUDE`, todavía sin confirmar.
-3. La segunda, al insertar, encuentra esa fila en conflicto y **espera** a que la primera termine.
-4. Si la primera confirma, la segunda falla con `23P01` (`exclusion_violation`) y la API responde **409 espacio ya
-   tomado**. Si la primera hace rollback, la segunda continúa y gana.
+3. La segunda, al insertar, encuentra esa fila en conflicto y espera a que la primera termine.
+4. Si la primera confirma, la segunda falla con `23P01` (`exclusion_violation`) y la API responde 409 espacio ya
+   tomado. Si la primera hace rollback, la segunda continúa y gana.
 
 Siempre hay exactamente una ganadora, y no existe una ventana en la que ambas "vean libre" el espacio y ambas inserten.
 
 Alternativas consideradas:
-- **Validar con un `SELECT` antes del `INSERT` en el backend:** no funciona; las dos transacciones pueden leer
+- Validar con un `SELECT` antes del `INSERT` en el backend: no funciona; las dos transacciones pueden leer
   "libre" al mismo tiempo y ambas insertan.
-- **SERIALIZABLE:** también evita la doble reserva, pero aborta transacciones con `40001` (incluso falsos positivos),
+- SERIALIZABLE: también evita la doble reserva, pero aborta transacciones con `40001` (incluso falsos positivos),
   obliga a reintentar y afecta a todas las transacciones del sistema.
-- **`SELECT ... FOR UPDATE` sobre el profesional:** funciona, pero depende de que todo camino del código recuerde
+- `SELECT ... FOR UPDATE` sobre el profesional: funciona, pero depende de que todo camino del código recuerde
   bloquear, y serializa todas las reservas del profesional aunque no se solapen.
 
-**Reprogramación (RF10):** `UPDATE` de la original a `reprogramada` y luego `INSERT` de la nueva, en la misma
+Reprogramación (RF10): `UPDATE` de la original a `reprogramada` y luego `INSERT` de la nueva, en la misma
 transacción. Si el `INSERT` falla, el rollback deja la original intacta como `reservada`.
 
-**Deadlock:** puede ocurrir si dos reprogramaciones cruzan espacios (A se mueve al espacio de B y B al de A). Postgres
+Deadlock: puede ocurrir si dos reprogramaciones cruzan espacios (A se mueve al espacio de B y B al de A). Postgres
 lo detecta y aborta una con `40P01`; el backend la reintenta un número limitado de veces o responde 409.
 
-**I7:** como el `EXCLUDE` solo considera las citas `reservada`, al confirmar una cancelación o reprogramación el
+I7: como el `EXCLUDE` solo considera las citas `reservada`, al confirmar una cancelación o reprogramación el
 espacio queda libre para la siguiente consulta.
 
 ### Roles de base de datos (menor privilegio)
 
 | Rol de BD | Tipo | Uso |
 |---|---|---|
-| `mc_owner` | LOGIN | Dueño del esquema. Solo ejecuta `schema.sql` y el seed. La aplicación **nunca** lo usa: el dueño puede desactivar triggers y el superusuario ignora los permisos, lo que anularía la protección de la bitácora. |
+| `mc_owner` | LOGIN | Dueño del esquema. Solo ejecuta `schema.sql` y el seed. La aplicación nunca lo usa: el dueño puede desactivar triggers y el superusuario ignora los permisos, lo que anularía la protección de la bitácora. |
 | `mc_app` | LOGIN, sin privilegios propios | Usuario con el que se conecta el backend. Es miembro de los cuatro roles siguientes y en cada transacción hace `SET LOCAL ROLE` al rol que trae el token. |
 | `mc_platform`, `mc_clinic_admin`, `mc_reception`, `mc_professional` | NOLOGIN | Llevan los permisos de la tabla siguiente. |
 
@@ -548,49 +548,17 @@ Permisos (S = SELECT, I = INSERT, U = UPDATE, D = DELETE; — = ninguno):
 | ProfessionalSchedules, Blockades | — | S I U D | S | S I U D |
 | Patients, PatientContacts | — | S I U | S I U | S |
 | ProfessionalContacts | — | S I U D | S | S |
-| Appointments | — | S I U* | S I U* | S U* |
+| Appointments | — | S I U | S I U | S U |
 | ClinicalNotes | — | — | — | S I U |
 | auditLogs | — | S I | I | I |
 
-\* `UPDATE` solo sobre las columnas `appointmentStatusId`, `cancelReason`, `cancelledBy`, `cancelledAt`, `updatedAt` y
+\ `UPDATE` solo sobre las columnas `appointmentStatusId`, `cancelReason`, `cancelledBy`, `cancelledAt`, `updatedAt` y
 `updatedBy` (`GRANT UPDATE (columnas) ON Appointments`). Así nadie puede cambiar `period` ni `serviceId` (I4).
 
 Las restricciones finas de la matriz ("solo los propios horarios", "solo notas de citas propias") las aplica el
 backend filtrando por el usuario del token; los roles de BD garantizan la parte gruesa: por ejemplo, recepción no
 puede leer notas clínicas aunque el backend tenga un error.
 
-### Dónde se garantiza cada regla
-
-| Regla | Motor | Backend / SP |
-|---|---|---|
-| I1, I2 | `EXCLUDE` | Traduce `23P01` a 409 |
-| I3 (dentro del horario, fuera de bloqueos) | — | Lo verifica en la transacción de reserva y de reprogramación |
-| I4 (duración fija) | Trigger que calcula `period` al insertar + `GRANT UPDATE` por columna | Solo envía el inicio |
-| I5 (aislamiento) | FKs compuestas | Toma `clinicId` del token y filtra toda consulta |
-| I6 (bitácora append-only) | Sin permisos de UPDATE/DELETE/TRUNCATE + trigger | — |
-| I7 (liberar espacio) | `EXCLUDE ... WHERE reservada` | Invalida la caché |
-| I8 (caché coherente) | — | Política de invalidación de Redis |
-| RF12 (desenlace después del inicio) | — | Verifica `now() >= lower(period)` |
-| RF13 (transiciones) | — | `UPDATE ... WHERE appointmentId = $1 AND appointmentStatusId = 1`; si afecta 0 filas, la transición no era válida y responde 409. Así dos cambios simultáneos no pueden pisarse |
-| RF15 (nota solo de cita atendida y propia) | — | Verifica estado y profesional antes de insertar |
-| RF18 (bitácora de lecturas y escrituras) | — | Inserta el registro en la misma transacción que la lectura o escritura; si el log falla, la operación se revierte |
-| RF4 (el profesional tiene la especialidad del servicio) | — | Lo verifica al asociar el servicio |
-| Usuario de `Professionals` con rol `professional` | FK `(userId, roleId)` + `CHECK` | — |
-| `isActive` (no reservar con paciente, servicio o profesional dado de baja) | — | Lo verifica antes de reservar |
-| `Clinics.timeZone` válida | — | La valida contra `pg_timezone_names` |
-
-Interpretación de I3 frente a RF6: I3 se verifica al reservar y al reprogramar. Un bloqueo creado después no cancela
-las citas que caen dentro (RF6); esas citas se listan como conflictos para que recepción las reprograme.
-
-### Limitaciones documentadas
-- **Una misma persona en dos clínicas** se registra como dos usuarios distintos, con dos cuentas de Keycloak
-  (`keycloakSub` es UNIQUE). Es coherente con RF2, que dice que un usuario pertenece a exactamente una clínica, y con
-  el aislamiento: ninguna clínica ve la agenda de la otra, por lo que el sistema no detecta si esa persona tiene citas
-  solapadas en las dos.
-- **Los horarios se cargan por semana.** Si no se cargan los bloques de una semana, ese profesional no tiene
-  disponibilidad esa semana.
-
-### Pendientes
-- Diagrama entidad-relación (cuando el modelo esté cerrado).
-- Asociación identidad de Keycloak ↔ clínica y flujo de alta de la clínica con su primer administrador (RF1).
-- Política de caché de disponibilidad (Redis).
+### Limitaciones
+- Una misma persona en dos clínicas se registra como dos usuarios distintos, con dos cuentas de Keycloak(`keycloakSub` es UNIQUE). Es coherente con RF2, que dice que un usuario pertenece a exactamente una clínica, y con el aislamiento: ninguna clínica ve la agenda de la otra, por lo que el sistema no detecta si esa persona tiene citas solapadas en las dos.
+- Los horarios se cargan por semana. Si no se cargan los bloques de una semana, ese profesional no tiene disponibilidad esa semana.
