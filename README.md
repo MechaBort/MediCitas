@@ -548,11 +548,11 @@ Permisos (S = SELECT, I = INSERT, U = UPDATE, D = DELETE; — = ninguno):
 | ProfessionalSchedules, Blockades | — | S I U D | S | S I U D |
 | Patients, PatientContacts | — | S I U | S I U | S |
 | ProfessionalContacts | — | S I U D | S | S |
-| Appointments | — | S I U | S I U | S U |
+| Appointments | — | S I U (columnas) | S I U (columnas) | S U (columnas) |
 | ClinicalNotes | — | — | — | S I U |
 | auditLogs | — | S I | I | I |
 
-\ `UPDATE` solo sobre las columnas `appointmentStatusId`, `cancelReason`, `cancelledBy`, `cancelledAt`, `updatedAt` y
+En Appointments, el `UPDATE` es solo sobre las columnas `appointmentStatusId`, `cancelReason`, `cancelledBy`, `cancelledAt`, `updatedAt` y
 `updatedBy` (`GRANT UPDATE (columnas) ON Appointments`). Así nadie puede cambiar `period` ni `serviceId` (I4).
 
 Las restricciones finas de la matriz ("solo los propios horarios", "solo notas de citas propias") las aplica el
