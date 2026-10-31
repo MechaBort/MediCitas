@@ -1,11 +1,65 @@
 # MediCitas
 MediCitas is a multi-tenant SaaS platform that manage medical appointments for numerous clinics and ensures data security
 
+## Cómo levantar el proyecto
 
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+| Servicio | URL | Notas |
+|---|---|---|
+| API | http://localhost:3000/health | Node 24 + Express 5 |
+| Keycloak | http://localhost:8080 | Consola con `KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD` del `.env`; el realm `medicitas` se importa solo desde `keycloak/medicitas-realm.json` |
+| PostgreSQL | `localhost:5432`, base `medicitas` | Esquema, permisos, catálogos y datos de demostración se cargan solos desde `db/` |
+| Redis | solo dentro de la red de Compose | Caché de disponibilidad, sin persistencia. Inspeccionar con `docker compose exec redis redis-cli` |
+
+La base y el realm se inicializan solo cuando el volumen de datos está vacío. Después de cambiar algo en
+`db/sql/` o en `keycloak/`, recrear desde cero con `docker compose down -v`.
+
+Diagramas de arquitectura y entidad-relación: [docs/diagramas.md](docs/diagramas.md).
+Diccionario de datos: [docs/diccionario-datos.md](docs/diccionario-datos.md). Se genera desde la base con
+`./db/tools/generar-diccionario.sh` (con la pila levantada); las descripciones están en `db/sql/05-comments.sql`.
+
+### Usuarios de prueba
+
+Todos tienen la contraseña `medicitas` (solo para desarrollo). El `sub` del token es el `keycloak_sub` de
+la tabla `users`, y de ahí sale la clínica del usuario.
+
+| Usuario | Rol | Clínica | Notas |
+|---|---|---|---|
+| `plataforma` | platform_admin | — | |
+| `admin.sanjose` · `admin.cartago` · `admin.bogota` | clinic_admin | la del nombre | |
+| `recepcion.sanjose` · `recepcion.cartago` · `recepcion.bogota` | reception | la del nombre | |
+| `laura.mora` · `andres.solis` · `daniela.rojas` · `mariana.quesada` | professional | CR-SJ-001 San José | |
+| `carlos.brenes` · `sofia.aguilar` · `javier.calderon` | professional | CR-CA-001 Cartago | |
+| `valentina.restrepo` · `santiago.ospina` · `camila.herrera` · `mateo.cardenas` | professional | CO-BO-001 Bogotá (otra zona horaria) | |
+| `exrecepcion.sanjose` | reception | CR-SJ-001 | Dado de baja en `users` (`is_active = false`) aunque Keycloak lo deje entrar |
+| `sinregistro` | reception | — | Existe en Keycloak pero no en `users`: un token válido sin usuario en el sistema |
+
+Obtener un token (válido 15 minutos):
+
+```bash
+curl -s -X POST http://localhost:8080/realms/medicitas/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=medicitas-api \
+  -d username=recepcion.sanjose -d password=medicitas
+```
+
+### Datos de demostración
+
+`db/sql/04-seed.sql` crea 3 clínicas (dos en Costa Rica y una en Colombia), 11 profesionales, 80 pacientes
+por clínica, horarios entre 8 semanas atrás y 4 semanas adelante de la fecha en que se levanta la base, y
+unas 4 000 citas en todos los estados, con notas clínicas y bitácora. Es determinista: no usa `random()`,
+así que dos personas que levanten el proyecto el mismo día obtienen los mismos datos. Incluye a propósito
+4 citas en conflicto con un bloqueo registrado después de reservarlas (RF6) y una reprogramación por clínica (RF10).
 
 ## Diseño de la base de datos (PostgreSQL)
 
 ### Convenciones
+- Nombres: este documento usa camelCase; en SQL (`db/sql/01-schema.sql`) se escriben en snake_case
+  (`clinicId` → `clinic_id`, `ServicesPerProfessionals` → `services_per_professionals`), porque PostgreSQL
+  convierte a minúsculas todo identificador sin comillas.
 - [tenant]: el tenant es la clínica. Las tablas marcadas con [tenant] contienen datos que pertenecen a una sola
   clínica y llevan la columna `clinicId`. Las tablas sin la marca son catálogos globales (países, especialidades,
   estados de cita...) o heredan la clínica de su tabla padre (se indica como "tenant implícito").
@@ -130,7 +184,7 @@ viene de `Users`. En las demás tablas, la columna `professionalId` contiene ese
 - updatedAt : TIMESTAMPTZ
 - updatedBy : INT (FK → Users)
 - CHECK (roleId = 4)
-- FK (userId, roleId) → Users(userId, roleId) ON UPDATE CASCADE - solo un usuario con rol `professional` puede estar aquí; si luego se le intenta cambiar el rol en `Users`, la cascada choca con el `CHECK` y el cambio se rechaza
+- FK (userId, roleId) → Users(userId, roleId) - solo un usuario con rol `professional` puede estar aquí; si luego se le intenta cambiar el rol en `Users`, el par (userId, 4) sigue referenciado y el cambio se rechaza
 
 ## SpecialtiesPerProfessionals (tenant implícito vía professionalId)
 Sin `clinicId`: las especialidades son un catálogo global y esta tabla solo se consulta a través del profesional
