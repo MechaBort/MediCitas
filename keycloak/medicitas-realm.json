@@ -1,0 +1,436 @@
+{
+  "realm": "medicitas",
+  "displayName": "MediCitas",
+  "enabled": true,
+  "registrationAllowed": false,
+  "accessTokenLifespan": 900,
+  "roles": {
+    "realm": [
+      {
+        "name": "platform_admin",
+        "description": "Administrador de plataforma"
+      },
+      {
+        "name": "clinic_admin",
+        "description": "Administrador de clínica"
+      },
+      {
+        "name": "reception",
+        "description": "Recepción"
+      },
+      {
+        "name": "professional",
+        "description": "Profesional de salud"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "medicitas-api",
+      "name": "MediCitas API",
+      "description": "Cliente público para obtener tokens desde la línea de comandos y las pruebas",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "audiencia-medicitas-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "medicitas-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "id": "c0000000-0000-4000-8000-000000000001",
+      "username": "plataforma",
+      "enabled": true,
+      "firstName": "Ernesto",
+      "lastName": "Vega Salas",
+      "email": "plataforma@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "platform_admin"
+      ]
+    },
+    {
+      "id": "c0000001-0000-4000-8000-000000000001",
+      "username": "admin.sanjose",
+      "enabled": true,
+      "firstName": "Gabriela",
+      "lastName": "Chaves Ramírez",
+      "email": "admin.sanjose@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "clinic_admin"
+      ]
+    },
+    {
+      "id": "c0000001-0000-4000-8000-000000000002",
+      "username": "recepcion.sanjose",
+      "enabled": true,
+      "firstName": "Pablo",
+      "lastName": "Arias Méndez",
+      "email": "recepcion.sanjose@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "reception"
+      ]
+    },
+    {
+      "id": "c0000001-0000-4000-8000-000000000003",
+      "username": "exrecepcion.sanjose",
+      "enabled": true,
+      "firstName": "Kevin",
+      "lastName": "Soto Alfaro",
+      "email": "exrecepcion.sanjose@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "reception"
+      ]
+    },
+    {
+      "id": "c0000001-0000-4000-8000-000000000011",
+      "username": "laura.mora",
+      "enabled": true,
+      "firstName": "Laura",
+      "lastName": "Mora Jiménez",
+      "email": "laura.mora@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000001-0000-4000-8000-000000000012",
+      "username": "andres.solis",
+      "enabled": true,
+      "firstName": "Andrés",
+      "lastName": "Solís Vargas",
+      "email": "andres.solis@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000001-0000-4000-8000-000000000013",
+      "username": "daniela.rojas",
+      "enabled": true,
+      "firstName": "Daniela",
+      "lastName": "Rojas Castro",
+      "email": "daniela.rojas@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000001-0000-4000-8000-000000000014",
+      "username": "mariana.quesada",
+      "enabled": true,
+      "firstName": "Mariana",
+      "lastName": "Quesada Araya",
+      "email": "mariana.quesada@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000002-0000-4000-8000-000000000001",
+      "username": "admin.cartago",
+      "enabled": true,
+      "firstName": "Rodrigo",
+      "lastName": "Pereira Coto",
+      "email": "admin.cartago@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "clinic_admin"
+      ]
+    },
+    {
+      "id": "c0000002-0000-4000-8000-000000000002",
+      "username": "recepcion.cartago",
+      "enabled": true,
+      "firstName": "Natalia",
+      "lastName": "Fallas Brenes",
+      "email": "recepcion.cartago@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "reception"
+      ]
+    },
+    {
+      "id": "c0000002-0000-4000-8000-000000000011",
+      "username": "carlos.brenes",
+      "enabled": true,
+      "firstName": "Carlos",
+      "lastName": "Brenes Montero",
+      "email": "carlos.brenes@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000002-0000-4000-8000-000000000012",
+      "username": "sofia.aguilar",
+      "enabled": true,
+      "firstName": "Sofía",
+      "lastName": "Aguilar Navarro",
+      "email": "sofia.aguilar@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000002-0000-4000-8000-000000000013",
+      "username": "javier.calderon",
+      "enabled": true,
+      "firstName": "Javier",
+      "lastName": "Calderón Ulate",
+      "email": "javier.calderon@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000003-0000-4000-8000-000000000001",
+      "username": "admin.bogota",
+      "enabled": true,
+      "firstName": "Juliana",
+      "lastName": "Martínez Rueda",
+      "email": "admin.bogota@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "clinic_admin"
+      ]
+    },
+    {
+      "id": "c0000003-0000-4000-8000-000000000002",
+      "username": "recepcion.bogota",
+      "enabled": true,
+      "firstName": "Felipe",
+      "lastName": "Castaño Ríos",
+      "email": "recepcion.bogota@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "reception"
+      ]
+    },
+    {
+      "id": "c0000003-0000-4000-8000-000000000011",
+      "username": "valentina.restrepo",
+      "enabled": true,
+      "firstName": "Valentina",
+      "lastName": "Restrepo Gómez",
+      "email": "valentina.restrepo@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000003-0000-4000-8000-000000000012",
+      "username": "santiago.ospina",
+      "enabled": true,
+      "firstName": "Santiago",
+      "lastName": "Ospina Rincón",
+      "email": "santiago.ospina@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000003-0000-4000-8000-000000000013",
+      "username": "camila.herrera",
+      "enabled": true,
+      "firstName": "Camila",
+      "lastName": "Herrera Duque",
+      "email": "camila.herrera@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000003-0000-4000-8000-000000000014",
+      "username": "mateo.cardenas",
+      "enabled": true,
+      "firstName": "Mateo",
+      "lastName": "Cárdenas Lozano",
+      "email": "mateo.cardenas@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "professional"
+      ]
+    },
+    {
+      "id": "c0000009-0000-4000-8000-000000000001",
+      "username": "sinregistro",
+      "enabled": true,
+      "firstName": "Usuario",
+      "lastName": "Sin Registro",
+      "email": "sinregistro@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "medicitas",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "reception"
+      ]
+    }
+  ]
+}
