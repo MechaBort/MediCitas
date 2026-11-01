@@ -629,7 +629,9 @@ La API no maneja contraseñas ni emite tokens: eso lo hace Keycloak, configurado
 
 1. El cliente pide un token a Keycloak con su usuario y contraseña.
 2. Llama a la API con el header `Authorization: Bearer <token>`.
-3. La API valida el token con las llaves públicas del realm (`app/src/auth.js`).
+3. La API valida el token con las llaves públicas del realm (`authenticate` en `app/src/auth.js`).
+4. Busca al usuario del token en la base para saber su clínica, su rol y sus permisos (`identify`).
+5. La ruta revisa que el rol tenga el permiso que exige (`requirePermission`).
 
 Obtener un token (por ejemplo, para recepción de la clínica San José):
 ```bash
@@ -654,13 +656,51 @@ Las llaves se piden por la red interna de Compose (`keycloak:8080`), pero el `is
 pública (`localhost:8080`), porque así lo fija `KC_HOSTNAME`. Por eso son dos variables distintas en
 `docker-compose.yml`: `KEYCLOAK_JWKS_URL` y `KEYCLOAK_ISSUER`.
 
+### Asociación de la identidad con su clínica
+Keycloak no guarda la clínica. Cada usuario del realm tiene un `id` fijo (en `medicitas-realm.json`) que llega
+en el token como `sub`, y el seed usa ese mismo valor en `users.keycloak_sub`. La API busca
+`users.keycloak_sub = sub` y de esa fila toma `clinic_id`.
+
+Se eligió la base y no un atributo en Keycloak por dos motivos:
+- `users.clinic_id` ya tiene que existir para las FKs compuestas; guardarlo también en Keycloak serían dos
+  copias del mismo dato que podrían dejar de coincidir.
+- Dar de baja a un usuario o a su clínica tiene efecto en la siguiente petición, sin esperar a que su token expire.
+
+A partir de ahí, toda consulta usa ese `clinic_id`. Un `clinicId` que venga en la URL, en el query string o
+en el body se ignora; en eso se apoya el aislamiento entre clínicas (I5).
+
+### Roles y permisos
+El token trae los roles del realm en `realm_access.roles`, junto con otros que agrega Keycloak
+(`offline_access`, `default-roles-medicitas`). Se toman solo los cuatro del dominio y se exige exactamente uno.
+Cada uno se traduce a dos cosas:
+
+| Rol del token | Rol de base de datos (`SET LOCAL ROLE`) | Permisos del dominio |
+|---|---|---|
+| `platform_admin` | `mc_platform` | los de `permissions_per_roles` para ese rol |
+| `clinic_admin` | `mc_clinic_admin` | ídem |
+| `reception` | `mc_reception` | ídem |
+| `professional` | `mc_professional` | ídem |
+
+Además se revisa que el rol del token sea el mismo que tiene el usuario en `users.role_id`.
+
+Cada ruta declara el permiso que necesita, por ejemplo `requirePermission('appointments.manage')`. La
+revisión es doble: el backend responde 403 si el rol no tiene el permiso, y aunque el backend tuviera un
+error, el rol de base de datos no tiene los GRANT para hacer la operación.
+
+`GET /me` devuelve la identidad resuelta (usuario, clínica, rol y permisos) y sirve para probar todo lo anterior.
+
 ### Respuestas
 | Caso | Código |
 |---|---|
 | Sin header `Authorization`, o con un esquema distinto de `Bearer` | 401 |
 | Token mal formado, firmado con otra llave, de otro emisor o para otra audiencia | 401 |
 | Token expirado | 401 |
+| El token no trae exactamente uno de los cuatro roles del dominio | 403 |
+| El `sub` no está registrado en `users` (usuario de prueba `sinregistro`) | 403 |
+| El usuario o su clínica están dados de baja (usuario de prueba `exrecepcion.sanjose`) | 403 |
+| El rol del token no coincide con el registrado en la base | 403 |
+| El rol no tiene el permiso que exige la ruta | 403 |
 | Keycloak no responde al pedir las llaves | 500 (no es un error del cliente) |
-| Token válido | sigue a la ruta |
+| Todo lo anterior en orden | sigue a la ruta |
 
 Las respuestas 401 llevan el header `WWW-Authenticate: Bearer`, como pide el estándar (RFC 6750).

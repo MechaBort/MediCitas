@@ -1,6 +1,6 @@
 import express from 'express';
 import { pool } from './db.js';
-import { authenticate } from './auth.js';
+import { authenticate, identify } from './auth.js';
 
 // La app se exporta sin escuchar en un puerto para poder probarla con supertest.
 export const app = express();
@@ -16,10 +16,11 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// Identidad de quien hace la petición. Por ahora solo devuelve lo que trae el token;
-// más adelante se le agrega la clínica, el rol y los permisos resueltos desde la base.
-app.get('/me', authenticate, (req, res) => {
-  res.json({ sub: req.token.sub, roles: req.token.realm_access?.roles ?? [] });
+// Identidad de quien hace la petición, tal como la resolvió el backend: usuario, clínica,
+// rol y permisos. No exige ningún permiso, solo un token válido de un usuario registrado.
+app.get('/me', authenticate, identify, (req, res) => {
+  const { userId, clinicId, role, permissions } = req.user;
+  res.json({ userId, clinicId, role, permissions: [...permissions] });
 });
 
 app.use((req, res) => {
