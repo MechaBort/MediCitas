@@ -614,3 +614,48 @@ puede leer notas clínicas aunque el backend tenga un error.
 ### Limitaciones
 - Una misma persona en dos clínicas se registra como dos usuarios distintos, con dos cuentas de Keycloak(`keycloakSub` es UNIQUE). Es coherente con RF2, que dice que un usuario pertenece a exactamente una clínica, y con el aislamiento: ninguna clínica ve la agenda de la otra, por lo que el sistema no detecta si esa persona tiene citas solapadas en las dos.
 - Los horarios se cargan por semana. Si no se cargan los bloques de una semana, ese profesional no tiene disponibilidad esa semana.
+
+==============================================================
+|        			    AUTENTICACIÓN           	         |
+==============================================================
+
+La API no maneja contraseñas ni emite tokens: eso lo hace Keycloak, configurado desde
+`keycloak/medicitas-realm.json` al levantar el compose. El flujo es:
+
+1. El cliente pide un token a Keycloak con su usuario y contraseña.
+2. Llama a la API con el header `Authorization: Bearer <token>`.
+3. La API valida el token con las llaves públicas del realm (`app/src/auth.js`).
+
+Obtener un token (por ejemplo, para recepción de la clínica San José):
+```bash
+curl -s -X POST http://localhost:8080/realms/medicitas/protocol/openid-connect/token \
+  -d grant_type=password -d client_id=medicitas-api \
+  -d username=recepcion.sanjose -d password=medicitas
+```
+El campo `access_token` de la respuesta es el que se manda a la API:
+```bash
+curl -s http://localhost:3000/me -H "Authorization: Bearer <access_token>"
+```
+
+### Qué se valida del token
+- Firma: se verifica con las llaves públicas que publica Keycloak (JWKS). La librería `jose` las descarga
+  la primera vez y las guarda en memoria; solo las vuelve a pedir si llega una llave desconocida.
+- Algoritmo: solo `RS256`, el que usa Keycloak. Un token con `alg: none` o con otro algoritmo se rechaza.
+- `iss`: que lo haya emitido el realm `medicitas`.
+- `aud`: que vaya dirigido a `medicitas-api` (lo agrega un mapper del client en el realm).
+- `exp`: que no haya expirado.
+
+Las llaves se piden por la red interna de Compose (`keycloak:8080`), pero el `iss` del token es la URL
+pública (`localhost:8080`), porque así lo fija `KC_HOSTNAME`. Por eso son dos variables distintas en
+`docker-compose.yml`: `KEYCLOAK_JWKS_URL` y `KEYCLOAK_ISSUER`.
+
+### Respuestas
+| Caso | Código |
+|---|---|
+| Sin header `Authorization`, o con un esquema distinto de `Bearer` | 401 |
+| Token mal formado, firmado con otra llave, de otro emisor o para otra audiencia | 401 |
+| Token expirado | 401 |
+| Keycloak no responde al pedir las llaves | 500 (no es un error del cliente) |
+| Token válido | sigue a la ruta |
+
+Las respuestas 401 llevan el header `WWW-Authenticate: Bearer`, como pide el estándar (RFC 6750).

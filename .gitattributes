@@ -1,0 +1,5 @@
+# Los scripts de shell se ejecutan dentro de contenedores Linux: con saltos de línea
+# CRLF (los que pone Git en Windows con core.autocrlf=true) la primera línea queda
+# "#!/usr/bin/env bash\r" y el script no arranca. Se fuerzan a LF en cualquier sistema.
+* text=auto
+*.sh text eol=lf

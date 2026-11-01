@@ -1,5 +1,6 @@
 import express from 'express';
 import { pool } from './db.js';
+import { authenticate } from './auth.js';
 
 // La app se exporta sin escuchar en un puerto para poder probarla con supertest.
 export const app = express();
@@ -13,6 +14,12 @@ app.get('/health', async (req, res) => {
   } catch {
     res.status(503).json({ status: 'error', db: 'down' });
   }
+});
+
+// Identidad de quien hace la petición. Por ahora solo devuelve lo que trae el token;
+// más adelante se le agrega la clínica, el rol y los permisos resueltos desde la base.
+app.get('/me', authenticate, (req, res) => {
+  res.json({ sub: req.token.sub, roles: req.token.realm_access?.roles ?? [] });
 });
 
 app.use((req, res) => {
