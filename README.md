@@ -552,8 +552,11 @@ Row-Level Security quedaría como una capa adicional sobre esta misma columna; n
 
 Pregunta rectora: dos recepcionistas reservan el último espacio exactamente al mismo tiempo.
 
-Se usa READ COMMITTED, el nivel por defecto de Postgres (hay que verificar que el ORM no lo cambie). Es
-suficiente porque la exclusión no depende del nivel de aislamiento sino de la restricción `EXCLUDE`:
+Se usa READ COMMITTED. Es el nivel por defecto de Postgres, pero no se deja a ese valor por omisión: toda
+transacción de la API pasa por `withTransaction` (`app/src/db.js`), que abre con
+`BEGIN ISOLATION LEVEL READ COMMITTED` y luego hace `SET LOCAL ROLE` al rol de base de la petición. El proyecto
+no usa ORM, así que no hay otra capa que pueda cambiar el nivel. Es suficiente porque la exclusión no depende
+del nivel de aislamiento sino de la restricción `EXCLUDE`:
 
 1. Las dos transacciones intentan insertar una cita del mismo profesional con periodos que se solapan.
 2. La primera inserta y deja su fila en el índice del `EXCLUDE`, todavía sin confirmar.
@@ -575,7 +578,9 @@ Reprogramación (RF10): `UPDATE` de la original a `reprogramada` y luego `INSERT
 transacción. Si el `INSERT` falla, el rollback deja la original intacta como `reservada`.
 
 Deadlock: puede ocurrir si dos reprogramaciones cruzan espacios (A se mueve al espacio de B y B al de A). Postgres
-lo detecta y aborta una con `40P01`; el backend la reintenta un número limitado de veces o responde 409.
+lo detecta y aborta una con `40P01`. `withTransaction` repite la transacción abortada completa, hasta 3
+intentos; para la otra transacción el deadlock no existe. Como la transacción puede repetirse, dentro de ella
+solo va trabajo sobre la base: lo externo, como invalidar la caché de Redis, se hace después del COMMIT.
 
 I7: como el `EXCLUDE` solo considera las citas `reservada`, al confirmar una cancelación o reprogramación el
 espacio queda libre para la siguiente consulta.
