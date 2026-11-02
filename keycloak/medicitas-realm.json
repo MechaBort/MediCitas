@@ -49,6 +49,20 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "medicitas-user-admin",
+      "name": "MediCitas API - administración de usuarios",
+      "description": "Client confidencial que usa la API (no las personas) para crear usuarios, asignar roles y darlos de baja en Keycloak (RF1, RF2). El secreto viene de KEYCLOAK_USER_ADMIN_SECRET.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${KEYCLOAK_USER_ADMIN_SECRET}",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true
     }
   ],
   "users": [
@@ -431,6 +445,16 @@
       "realmRoles": [
         "reception"
       ]
+    },
+    {
+      "username": "service-account-medicitas-user-admin",
+      "enabled": true,
+      "serviceAccountClientId": "medicitas-user-admin",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users"
+        ]
+      }
     }
   ]
 }

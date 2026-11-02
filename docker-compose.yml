@@ -35,6 +35,8 @@ services:
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Falta KEYCLOAK_DB_PASSWORD en .env}
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:?Falta KEYCLOAK_ADMIN_USER en .env}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Falta KEYCLOAK_ADMIN_PASSWORD en .env}
+      # Lo usa medicitas-realm.json como ${KEYCLOAK_USER_ADMIN_SECRET} al importar el realm.
+      KEYCLOAK_USER_ADMIN_SECRET: ${KEYCLOAK_USER_ADMIN_SECRET:?Falta KEYCLOAK_USER_ADMIN_SECRET en .env}
       KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8080}
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_HEALTH_ENABLED: "true"
@@ -64,6 +66,11 @@ services:
       KEYCLOAK_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/medicitas
       KEYCLOAK_AUDIENCE: medicitas-api
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/medicitas/protocol/openid-connect/certs
+      # Admin API de Keycloak para crear usuarios y asignar roles (RF1, RF2).
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: medicitas
+      KEYCLOAK_USER_ADMIN_CLIENT_ID: medicitas-user-admin
+      KEYCLOAK_USER_ADMIN_SECRET: ${KEYCLOAK_USER_ADMIN_SECRET:?Falta KEYCLOAK_USER_ADMIN_SECRET en .env}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env}@redis:6379
     ports:
       - "127.0.0.1:${APP_PORT:-3000}:3000"
