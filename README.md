@@ -704,3 +704,106 @@ error, el rol de base de datos no tiene los GRANT para hacer la operación.
 | Todo lo anterior en orden | sigue a la ruta |
 
 Las respuestas 401 llevan el header `WWW-Authenticate: Bearer`, como pide el estándar (RFC 6750).
+
+### Usuarios en Keycloak y en la base
+Cada usuario existe en dos lugares: en Keycloak (usuario, contraseña y rol, para iniciar sesión) y en `users`
+(clínica y rol, para la API). La API mantiene las dos copias: al dar de alta, cambiar el rol o dar de baja
+(RF1, RF2) actualiza ambos lados, sin pasos manuales en la consola de Keycloak.
+
+Para eso usa la Admin API de Keycloak con el client confidencial `medicitas-user-admin`, cuyo secreto viene de
+`KEYCLOAK_USER_ADMIN_SECRET`. Su service account solo tiene el rol `manage-users` de `realm-management`:
+puede administrar usuarios, pero no cambiar la configuración del realm.
+
+Keycloak y Postgres no comparten una transacción, así que el orden de los pasos está pensado para que
+cualquier falla a medias deje el sistema cerrado (sin acceso) y no abierto:
+
+| Operación | Orden | Si falla el segundo paso |
+|---|---|---|
+| Alta | 1. Keycloak: crear usuario y asignar rol. 2. Base: insertar en `users` | Se borra el usuario de Keycloak (compensación). Si también falla el borrado, queda un usuario en Keycloak sin fila en `users`: `identify` le responde 403 |
+| Cambio de rol | 1. Base. 2. Keycloak | Los roles no coinciden y `identify` responde 403. La API responde 502; repetir la petición corrige la diferencia |
+| Baja lógica | 1. Base. 2. Keycloak (`enabled: false`) | La base ya lo tiene inactivo: `identify` responde 403. Keycloak sigue entregando tokens que no sirven |
+| Reactivación | 1. Base. 2. Keycloak (`enabled: true`) | Keycloak no le entrega tokens hasta repetir la petición |
+
+Las operaciones en Keycloak son idempotentes (asignar un rol que ya tiene, deshabilitar a alguien ya
+deshabilitado), por eso repetir la petición es seguro.
+
+Keycloak importa `medicitas-realm.json` solo si el realm no existe. Después de cambiar ese archivo hay que
+recrear los volúmenes: `docker compose down -v` y luego `docker compose up`.
+
+==============================================================
+|        			        API           	                 |
+==============================================================
+
+Todas las rutas, salvo `/health`, exigen `Authorization: Bearer <token>`. Los cuerpos son JSON. Un error
+siempre responde `{ "error": "mensaje" }`; si es de validación (400), también trae
+`"details": [{ "field": "...", "problem": "..." }]`. Un campo que la ruta no espera se rechaza con 400 (por
+ejemplo, mandar `clinicId`: la clínica siempre sale del token).
+
+Códigos comunes a todas las rutas protegidas: 401 sin token válido, 403 sin el permiso, 400 si el body o los
+parámetros no son válidos o el JSON está mal formado.
+
+En Windows con Git Bash, `curl -d '...'` no envía en UTF-8 los caracteres como tildes o ñ. Para probar con
+esos datos, guarde el body en un archivo y use `curl --data-binary @body.json`.
+
+### `GET /health`
+Sin token. `200 {"status":"ok","db":"up"}` o `503` si la base no responde.
+
+### `GET /me`
+Cualquier usuario registrado. `200 {"userId", "clinicId", "role", "permissions": [...]}`.
+
+### `POST /clinics` (RF1)
+Permiso `clinics.create` (administrador de plataforma). Crea la clínica y su primer administrador.
+```json
+{
+  "clinicCode": "heredia",
+  "clinicName": "Clínica Heredia",
+  "timeZone": "America/Costa_Rica",
+  "admin": {
+    "username": "admin.heredia",
+    "email": "admin.heredia@example.com",
+    "name": "Ana",
+    "lastName": "Vargas",
+    "password": "contraseña-inicial",
+    "temporaryPassword": true
+  }
+}
+```
+- `timeZone`: nombre IANA, validado contra `pg_timezone_names`.
+- `username`: 3 a 50 caracteres, minúsculas, números, `.`, `-` o `_`. `password`: mínimo 8 caracteres.
+- `temporaryPassword` (por defecto `true`): Keycloak obliga a cambiarla en el primer inicio de sesión, que
+  se hace desde `http://localhost:8080/realms/medicitas/account`. Mientras no la cambie, pedir un token con
+  `curl` falla. Con `false` se puede usar de inmediato.
+
+| Código | Caso |
+|---|---|
+| 201 | Creada. Devuelve la clínica y `admin: {userId, username, name, lastName, role}` |
+| 400 | Body inválido o zona horaria desconocida |
+| 409 | Ya existe una clínica con ese código, o un usuario con ese `username` o `email` |
+
+### `GET /users` y `GET /users/{userId}` (RF2)
+Permiso `users.manage` (administrador de clínica). Lista los usuarios de la clínica del token, o uno solo.
+Cada usuario: `{userId, name, lastName, role, isActive, createdAt, updatedAt}`.
+Un usuario de otra clínica responde 404, igual que uno que no existe.
+
+### `POST /users` (RF2)
+Permiso `users.manage`. Mismos campos que `admin` en `POST /clinics`, más `"role"`: `"clinic_admin"` o
+`"reception"`. Los profesionales se dan de alta por su propia ruta (RF4), porque además llevan licencia,
+especialidades y servicios.
+
+| Código | Caso |
+|---|---|
+| 201 | Creado, en la clínica de quien lo crea. Devuelve el usuario y su `username` |
+| 400 | Body inválido o rol no permitido |
+| 409 | Ya existe un usuario con ese `username` o `email` |
+
+### `PATCH /users/{userId}` (RF2)
+Permiso `users.manage`. Body con uno o ambos campos: `{"role": "clinic_admin" | "reception", "isActive": false}`.
+`isActive: false` es la baja lógica y `true` la reactivación.
+
+| Código | Caso |
+|---|---|
+| 200 | Aplicado en la base y en Keycloak. Devuelve el usuario |
+| 400 | Body vacío o inválido |
+| 404 | El usuario no existe en la clínica del token |
+| 409 | Es el propio usuario (no puede quitarse el rol ni darse de baja), o es un profesional y se pidió cambiar su rol |
+| 502 | Se guardó en la base pero no en Keycloak; el usuario queda sin acceso hasta repetir la petición |
