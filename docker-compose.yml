@@ -99,7 +99,9 @@ services:
       - --maxmemory
       - 64mb
       - --maxmemory-policy
-      - allkeys-lru
+      # Si se llena la memoria, solo expulsa claves con vencimiento (las copias de disponibilidad),
+      # nunca las versiones de agenda, que no vencen. 
+      - volatile-lru
       - --requirepass
       - ${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env}
     environment:
