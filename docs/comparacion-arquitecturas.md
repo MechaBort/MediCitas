@@ -185,6 +185,29 @@ base antes de que la reserva se confirme y guardar un dato viejo justo en la cop
 una regla que el código ya tiene: `withTransaction` (`app/src/db.js`) puede repetir una transacción ante un
 deadlock, así que todo efecto externo, como tocar Redis, va después de que la transacción termina.
 
+### Configuración de Redis
+
+Todo el mecanismo depende de que **un número de versión nunca se repita**. Si Redis borrara la clave `ver:…` de
+una agenda mientras todavía existen copias viejas, el contador volvería a empezar desde cero. Una copia vieja con
+el mismo número podría volver a leerse como vigente, lo que viola I8.
+
+Redis borra claves por su cuenta cuando llega a su límite de memoria (`--maxmemory`). Qué claves borra lo decide
+su política de expulsión. Antes estaba en `allkeys-lru`, que expulsa cualquier clave usada hace tiempo, incluidas
+las versiones. Por eso se fijaron estas reglas:
+
+| Regla | Por qué |
+|---|---|
+| Política `volatile-lru` en `docker-compose.yml` | Solo expulsa claves que tienen vencimiento. Las versiones nunca se expulsan |
+| Las versiones (`ver:…`) no tienen vencimiento | Así esa política nunca puede borrarlas |
+| Las copias (`disp:…:v{n}`) vencen en pocos minutos | Siempre desaparecen antes que su versión, y son lo único que Redis puede expulsar |
+| Solo se limpian versiones de fechas ya pasadas, días después | Para entonces sus copias ya vencieron, así que no queda ninguna que pueda coincidir |
+| Redis no guarda nada en disco (`--save ""`, `--appendonly no`) | Si se reinicia, se pierden a la vez versiones y copias, así que tampoco queda ninguna copia vieja |
+
+Si la memoria llegara a llenarse solo con versiones, Redis rechazaría las escrituras nuevas con un error de
+memoria. `agenda` lo trata igual que un Redis caído: consulta PostgreSQL, que es más lento pero correcto. Las
+versiones son claves pequeñas, una por profesional y día consultado. El límite de memoria se dimensiona con
+esa cuenta en cada entorno, y en Kubernetes se usa la misma política.
+
 ### Alternativas descartadas
 
 - **Borrar la entrada y dejar que expire.** Una consulta que leyó la base justo antes de una reserva puede
