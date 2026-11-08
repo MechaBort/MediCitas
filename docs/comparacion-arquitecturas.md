@@ -1,7 +1,7 @@
 # Comparación de arquitecturas para MediCitas
 
 > Estado: **decidido el 2026-11-07, enfoque 1**: servicios por dominio con una base única dividida en schemas.
-> El diseño detallado sigue pendiente.
+> El diseño detallado de ese enfoque está en [diseno-servicios.md](diseno-servicios.md).
 
 ## Qué estamos decidiendo
 
