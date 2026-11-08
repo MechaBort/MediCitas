@@ -1,0 +1,9 @@
+# Los Dockerfile de services/* se construyen con la raíz del repositorio como contexto.
+# Nada de esto hace falta en una imagen: las dependencias se instalan dentro de la imagen,
+# .git y los PDF solo agregan peso, y .env tiene contraseñas.
+**/node_modules
+**/npm-debug.log*
+.git
+.env
+*.pdf
+.claude

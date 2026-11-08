@@ -1,5 +1,5 @@
 import { app } from './app.js';
-import { pool } from './db.js';
+import { pool } from '@medicitas/common/db';
 
 const port = Number(process.env.PORT ?? 3000);
 
