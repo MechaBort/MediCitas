@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requirePermission } from '../auth.js';
-import { withTransaction } from '../db.js';
-import { HttpError, parse } from '../errors.js';
+import { requirePermission } from '@medicitas/common/auth';
+import { withTransaction } from '@medicitas/common/db';
+import { HttpError, parse } from '@medicitas/common/errors';
 import { ROLE_ID, createAccount, personSchema } from '../accounts.js';
 import * as keycloak from '../keycloak.js';
 

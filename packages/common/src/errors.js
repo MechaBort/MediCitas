@@ -2,8 +2,8 @@ import { z } from 'zod';
 
 z.config(z.locales.es());
 
-// Error con código HTTP. Las rutas lo lanzan y el manejador de errores de app.js lo
-// convierte en la respuesta { error, details? } con ese status.
+// Error con código HTTP. Las rutas lo lanzan y el manejador de errores de cada servicio
+// (su app.js) lo convierte en la respuesta { error, details? } con ese status.
 export class HttpError extends Error {
   constructor(status, message, details) {
     super(message);

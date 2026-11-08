@@ -553,7 +553,7 @@ Row-Level Security quedaría como una capa adicional sobre esta misma columna; n
 Pregunta rectora: dos recepcionistas reservan el último espacio exactamente al mismo tiempo.
 
 Se usa READ COMMITTED. Es el nivel por defecto de Postgres, pero no se deja a ese valor por omisión: toda
-transacción de la API pasa por `withTransaction` (`app/src/db.js`), que abre con
+transacción de la API pasa por `withTransaction` (`packages/common/src/db.js`), que abre con
 `BEGIN ISOLATION LEVEL READ COMMITTED` y luego hace `SET LOCAL ROLE` al rol de base de la petición. El proyecto
 no usa ORM, así que no hay otra capa que pueda cambiar el nivel. Es suficiente porque la exclusión no depende
 del nivel de aislamiento sino de la restricción `EXCLUDE`:
@@ -629,7 +629,7 @@ La API no maneja contraseñas ni emite tokens: eso lo hace Keycloak, configurado
 
 1. El cliente pide un token a Keycloak con su usuario y contraseña.
 2. Llama a la API con el header `Authorization: Bearer <token>`.
-3. La API valida el token con las llaves públicas del realm (`authenticate` en `app/src/auth.js`).
+3. La API valida el token con las llaves públicas del realm (`authenticate` en `packages/common/src/auth.js`).
 4. Busca al usuario del token en la base para saber su clínica, su rol y sus permisos (`identify`).
 5. La ruta revisa que el rol tenga el permiso que exige (`requirePermission`).
 

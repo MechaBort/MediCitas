@@ -182,7 +182,7 @@ al expirar. Esa expiración solo libera memoria: la corrección no depende de el
 
 El orden importa. Si la versión subiera antes del COMMIT, una consulta podría tomar la versión nueva, leer la
 base antes de que la reserva se confirme y guardar un dato viejo justo en la copia vigente. Esto encaja con
-una regla que el código ya tiene: `withTransaction` (`app/src/db.js`) puede repetir una transacción ante un
+una regla que el código ya tiene: `withTransaction` (`packages/common/src/db.js`) puede repetir una transacción ante un
 deadlock, así que todo efecto externo, como tocar Redis, va después de que la transacción termina.
 
 ### Configuración de Redis

@@ -66,12 +66,12 @@ disponibilidad, citas y reportes.
 package.json            raíz: define los workspaces
 package-lock.json       uno solo para todo el repositorio
 packages/
-  common/               auth.js, db.js y errors.js (hoy en app/src)
+  common/src/           auth.js, db.js y errors.js (antes en app/src)
 services/
-  admin/                el código actual de app/, con su Dockerfile
-  agenda/
-  clinical/
-gateway/
+  admin/                el código que antes estaba en app/, con su Dockerfile
+  agenda/               (etapa 5)
+  clinical/             (etapa 5)
+gateway/                (etapa 5)
   nginx.conf
 db/                     sin cambios de ubicación
 keycloak/

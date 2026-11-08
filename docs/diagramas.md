@@ -10,7 +10,7 @@ flowchart LR
     cliente["Cliente<br/>curl · colección de peticiones · pruebas"]
 
     subgraph compose["Docker Compose · red interna"]
-        app["app<br/>Node 24 + Express 5<br/>puerto 3000"]
+        admin["admin<br/>Node 24 + Express 5<br/>puerto 3000"]
         kc["keycloak<br/>Keycloak 26.7<br/>realm medicitas<br/>puerto 8080"]
         subgraph pg["db · PostgreSQL 18"]
             medicitas[("base medicitas<br/>dueño: mc_owner")]
@@ -23,10 +23,10 @@ flowchart LR
     sql[/"db/sql/*.sql"/]
 
     cliente -- "1 pide un token (OIDC)" --> kc
-    cliente -- "2 petición con Bearer token" --> app
-    app -- "3 llaves públicas (JWKS)" --> kc
-    app -- "4 SQL como mc_app + SET LOCAL ROLE" --> medicitas
-    app -- "5 caché de disponibilidad (RF7)" --> redis
+    cliente -- "2 petición con Bearer token" --> admin
+    admin -- "3 llaves públicas (JWKS)" --> kc
+    admin -- "4 SQL como mc_app + SET LOCAL ROLE" --> medicitas
+    admin -- "5 caché de disponibilidad (RF7)" --> redis
     kc --> kcdb
     realm -. "se importa al primer arranque" .-> kc
     sql -. "se ejecutan al primer arranque" .-> medicitas

@@ -1,7 +1,7 @@
 import express from 'express';
-import { pool } from './db.js';
-import { authenticate, identify } from './auth.js';
-import { toResponse } from './errors.js';
+import { pool } from '@medicitas/common/db';
+import { authenticate, identify } from '@medicitas/common/auth';
+import { toResponse } from '@medicitas/common/errors';
 import { clinicsRouter } from './routes/clinics.js';
 import { usersRouter } from './routes/users.js';
 

@@ -52,8 +52,12 @@ services:
       retries: 30
       start_period: 30s
 
-  app:
-    build: ./app
+  admin:
+    build:
+      # El contexto es la raíz del repositorio: la imagen necesita packages/common y el
+      # package-lock.json de la raíz (ver services/admin/Dockerfile).
+      context: .
+      dockerfile: services/admin/Dockerfile
     restart: unless-stopped
     environment:
       PORT: 3000

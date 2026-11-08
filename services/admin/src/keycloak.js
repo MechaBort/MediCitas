@@ -1,4 +1,4 @@
-import { HttpError } from './errors.js';
+import { HttpError } from '@medicitas/common/errors';
 
 // Cliente de la Admin REST API de Keycloak. La API se autentica como el client confidencial
 // medicitas-user-admin (client_credentials), cuya service account solo tiene el rol

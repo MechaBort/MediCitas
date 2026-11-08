@@ -1,20 +1,16 @@
 {
-  "name": "medicitas-api",
+  "name": "@medicitas/admin",
   "version": "0.1.0",
   "private": true,
-  "description": "API REST de MediCitas",
+  "description": "Servicio admin de MediCitas: clínicas, usuarios, servicios y profesionales (RF1–RF4)",
   "type": "module",
   "main": "src/server.js",
-  "engines": {
-    "node": ">=24"
-  },
   "scripts": {
     "start": "node src/server.js"
   },
   "dependencies": {
+    "@medicitas/common": "*",
     "express": "^5.3.0",
-    "jose": "^6.2.14",
-    "pg": "^8.23.1",
     "zod": "^4.6.7"
   }
 }
