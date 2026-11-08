@@ -7,7 +7,16 @@
 -- mc_app no recibe nada directo: en cada transacción hace SET LOCAL ROLE.
 -- =============================================================================
 
+-- Las tablas viven en los schemas admin, agenda y clinical (ver 01-schema.sql).
+SET search_path = admin, agenda, clinical, public;
+
 BEGIN;
+
+-- Entrar a un schema exige USAGE, además del permiso sobre cada tabla. mc_platform solo
+-- entra a admin: sus permisos de lectura sobre catálogos de agenda y clinical (más abajo)
+-- quedan sin efecto, a propósito, porque la plataforma no ve datos de agenda ni clínicos.
+GRANT USAGE ON SCHEMA admin           TO mc_platform, mc_clinic_admin, mc_reception, mc_professional;
+GRANT USAGE ON SCHEMA agenda, clinical TO mc_clinic_admin, mc_reception, mc_professional;
 
 -- Las funciones nacen ejecutables por PUBLIC; los triggers no necesitan ese permiso.
 -- (Se nombran una por una: "ALL FUNCTIONS" incluiría las de btree_gist, que no son de mc_owner.)

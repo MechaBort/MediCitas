@@ -179,7 +179,11 @@ perfiles y sus permisos (`db/sql/02-grants.sql`) **no cambian**.
 | `agenda` | `professional_schedules`, `blockades`, `appointment_statuses`, `appointments` |
 | `clinical` | `patients`, `patient_contacts`, `genders`, `clinical_notes`, `event_types`, `data_objects`, `audit_logs` |
 
-Son las 30 tablas actuales de `db/sql/01-schema.sql`, sin cambios de columnas.
+Son las 30 tablas actuales de `db/sql/01-schema.sql`, sin cambios de columnas. **Implementado en la etapa 2.**
+
+**Los schemas separan servicios, no clínicas.** No hay que confundirlos con el "esquema por tenant" que el README
+compara y descarta para el multi-tenancy. Las tres clínicas comparten las mismas tablas de cada schema, y el tenant
+sigue siendo la columna `clinic_id`.
 
 **Reglas.**
 
@@ -188,8 +192,23 @@ Son las 30 tablas actuales de `db/sql/01-schema.sql`, sin cambios de columnas.
 - **Llaves foráneas.** Las que cruzan schemas **se conservan**. Una cita sigue sin poder apuntar a un paciente de
   otra clínica, porque lo impide la base (I5).
 - **`search_path`.** Es la lista de schemas donde PostgreSQL busca una tabla cuando no se le indica el schema.
-  Cada usuario de servicio tiene la suya, y así las consultas existentes no cambian. El caso de las funciones de
-  los triggers se resuelve al implementar la separación.
+  Decisión de la etapa 2:
+  - Cada `CREATE TABLE` nombra su schema, para que el reparto se vea en el propio SQL.
+  - El resto del SQL usa nombres simples: cada script de `db/sql/` empieza con
+    `SET search_path = admin, agenda, clinical, public`.
+  - El usuario de conexión tiene la misma lista (`ALTER ROLE ... IN DATABASE medicitas SET search_path`), así que
+    las consultas de la API no cambiaron. La lista pertenece a la sesión, así que sigue vigente después de
+    `SET LOCAL ROLE`.
+  - Las funciones de los triggers viven en el schema de su tabla y fijan su propia lista (`SET search_path` en la
+    función), para no depender de quién dispara el trigger. En `appointments_check_agenda`, que es
+    `SECURITY DEFINER`, además es una medida de seguridad: sin esa lista fija, quien la llama podría hacerle leer
+    una tabla falsa con el mismo nombre.
+  - **Regla que esto impone:** los nombres de tabla son únicos entre los tres schemas.
+  - **Alternativa descartada:** escribir el schema en cada mención de cada tabla. Eran cientos de cambios, y cada
+    ruta nueva tendría que recordarlo.
+- **Un perfil sin `USAGE` no ve el schema.** Para `mc_platform`, `patients` responde "la relación no existe" y
+  `clinical.patients` responde "permiso denegado". En los dos casos no lee nada. Además, desde la etapa 3, un token
+  de plataforma no llega a `agenda` ni a `clinical`.
 - **Errores del sistema.** Solo `admin` escribe en `system_errors_logs`. `agenda` y `clinical` escriben sus errores
   en la salida estándar, que Kubernetes recoge y se consulta con `kubectl logs`.
 - **Contactos de pacientes.** `agenda` nunca lee `patient_contacts`. Leer datos de contacto obliga a registrar el

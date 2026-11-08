@@ -10,6 +10,9 @@
 
 - **Nombres.** Están en snake_case, tal como existen en la base. El modelo del README usa camelCase
   (`clinicId` → `clinic_id`).
+- **Schemas.** Cada tabla vive en el schema del servicio que la escribe: `admin`, `agenda` o `clinical`
+  (`docs/diseno-servicios.md`). Separan servicios, no clínicas: el tenant sigue siendo `clinic_id`. Las FKs y
+  las funciones se muestran con su schema, así se ve qué relaciones cruzan de un servicio a otro.
 - **Columnas de cada tabla.**
   - *Nulo*: `sí` si la columna admite NULL.
   - *Por omisión*: valor que pone el motor si el `INSERT` no lo trae. `identidad` significa
@@ -51,11 +54,19 @@
 | Citas y notas clínicas | [appointment_statuses](#appointment_statuses), [appointments](#appointments), [clinical_notes](#clinical_notes) |
 | Bitácoras | [event_types](#event_types), [data_objects](#data_objects), [audit_logs](#audit_logs), [severities](#severities), [system_errors_logs](#system_errors_logs) |
 
+## Tablas por schema
+
+| Schema | Descripción | Tablas |
+|---|---|---|
+| `admin` | Servicio admin (RF1–RF4): clínicas, usuarios, roles y permisos, geografía, especialidades, catálogo de servicios y profesionales. También el registro de errores del sistema. | [clinics](#clinics), [users](#users), [roles](#roles), [professionals](#professionals), [permissions](#permissions), [permissions_per_roles](#permissions_per_roles), [countries](#countries), [states](#states), [cities](#cities), [addresses](#addresses), [clinics_addresses](#clinics_addresses), [specialties](#specialties), [specialties_per_professionals](#specialties_per_professionals), [services](#services), [services_per_professionals](#services_per_professionals), [professional_contacts](#professional_contacts), [contact_types](#contact_types), [severities](#severities), [system_errors_logs](#system_errors_logs) |
+| `agenda` | Servicio agenda (RF5–RF13, RF16, RF20, RF21): horarios de atención, bloqueos y citas. Es el schema de mayor carga. | [professional_schedules](#professional_schedules), [blockades](#blockades), [appointment_statuses](#appointment_statuses), [appointments](#appointments) |
+| `clinical` | Servicio clinical (RF14, RF15, RF18, RF19): pacientes y sus contactos, notas clínicas y la bitácora de auditoría append-only. | [genders](#genders), [patients](#patients), [patient_contacts](#patient_contacts), [clinical_notes](#clinical_notes), [event_types](#event_types), [data_objects](#data_objects), [audit_logs](#audit_logs) |
+
 ## Clínicas, usuarios y permisos
 
 ### clinics
 
-Clínicas cliente de la plataforma (RF1). Cada clínica es un tenant: su clinic_id aparece en todas las tablas de datos de la clínica.
+**Schema:** `admin`. Clínicas cliente de la plataforma (RF1). Cada clínica es un tenant: su clinic_id aparece en todas las tablas de datos de la clínica.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -66,24 +77,24 @@ Clínicas cliente de la plataforma (RF1). Cada clínica es un tenant: su clinic_
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 ### users
 
-Usuarios del personal (RF2). Las credenciales viven en Keycloak: aquí solo se guarda el sub del token, la clínica y el rol. Tenant: clinic_id, NULL solo para el administrador de plataforma.
+**Schema:** `admin`. Usuarios del personal (RF2). Las credenciales viven en Keycloak: aquí solo se guarda el sub del token, la clínica y el rol. Tenant: clinic_id, NULL solo para el administrador de plataforma.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `user_id` | integer | no | identidad | PK | Identificador interno del usuario. El 1 es el usuario Sistema, autor de los datos iniciales, que no puede iniciar sesión. |
 | `keycloak_sub` | uuid | no |  | UK | Claim sub del token de Keycloak. Es la llave con que el backend asocia cada identidad con su clínica y su rol. |
-| `clinic_id` | integer | sí |  | FK → clinics | Clínica a la que pertenece el usuario. NULL si y solo si es administrador de plataforma. |
-| `role_id` | smallint | no |  | FK → roles | Rol del usuario dentro de su clínica. |
+| `clinic_id` | integer | sí |  | FK → admin.clinics | Clínica a la que pertenece el usuario. NULL si y solo si es administrador de plataforma. |
+| `role_id` | smallint | no |  | FK → admin.roles | Rol del usuario dentro de su clínica. |
 | `name` | varchar(50) | no |  |  | Nombre o nombres. |
 | `last_name` | varchar(50) | no |  |  | Apellidos. |
 | `is_active` | boolean | no | `true` |  | Baja lógica (RF2): un usuario inactivo no opera aunque Keycloak le emita un token. No se borra porque citas, notas y bitácora lo referencian. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
@@ -93,7 +104,7 @@ Usuarios del personal (RF2). Las credenciales viven en Keycloak: aquí solo se g
 
 ### roles
 
-Roles de la aplicación, con ids fijos porque los CHECK y el backend los usan como constantes. Catálogo global.
+**Schema:** `admin`. Roles de la aplicación, con ids fijos porque los CHECK y el backend los usan como constantes. Catálogo global.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -103,11 +114,11 @@ Roles de la aplicación, con ids fijos porque los CHECK y el backend los usan co
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 ### professionals
 
-Datos de los usuarios con rol professional (RF4): especialización 1:1 de users. No lleva clinic_id; la clínica se toma de users.
+**Schema:** `admin`. Datos de los usuarios con rol professional (RF4): especialización 1:1 de users. No lleva clinic_id; la clínica se toma de users.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -117,16 +128,16 @@ Datos de los usuarios con rol professional (RF4): especialización 1:1 de users.
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
-- `fk_professionals_user_role` (FK): `FOREIGN KEY (user_id, role_id) REFERENCES users(user_id, role_id)` — Solo un usuario con rol professional puede estar aquí. Mientras lo sea, tampoco se le puede cambiar el rol en users: el par (user_id, 4) sigue referenciado.
+- `fk_professionals_user_role` (FK): `FOREIGN KEY (user_id, role_id) REFERENCES admin.users(user_id, role_id)` — Solo un usuario con rol professional puede estar aquí. Mientras lo sea, tampoco se le puede cambiar el rol en users: el par (user_id, 4) sigue referenciado.
 - `ck_professionals_role` (CHECK): `CHECK ((role_id = 4))` — role_id siempre vale 4 (professional).
 
 ### permissions
 
-Permisos del dominio (RF17). El backend traduce el rol del token a estos permisos. Catálogo global.
+**Schema:** `admin`. Permisos del dominio (RF17). El backend traduce el rol del token a estos permisos. Catálogo global.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -136,21 +147,21 @@ Permisos del dominio (RF17). El backend traduce el rol del token a estos permiso
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 ### permissions_per_roles
 
-Matriz de permisos: qué permisos tiene cada rol (RF17). Catálogo global.
+**Schema:** `admin`. Matriz de permisos: qué permisos tiene cada rol (RF17). Catálogo global.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `permission_per_role_id` | integer | no | identidad | PK | Identificador de la asignación. |
-| `role_id` | smallint | no |  | FK → roles | Rol que recibe el permiso. |
-| `permission_id` | integer | no |  | FK → permissions | Permiso otorgado. |
+| `role_id` | smallint | no |  | FK → admin.roles | Rol que recibe el permiso. |
+| `permission_id` | integer | no |  | FK → admin.permissions | Permiso otorgado. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
@@ -160,7 +171,7 @@ Matriz de permisos: qué permisos tiene cada rol (RF17). Catálogo global.
 
 ### countries
 
-Países de las direcciones de las clínicas. Catálogo global.
+**Schema:** `admin`. Países de las direcciones de las clínicas. Catálogo global.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -170,70 +181,70 @@ Países de las direcciones de las clínicas. Catálogo global.
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 ### states
 
-Primera división administrativa de un país (provincia, departamento, estado). Catálogo global.
+**Schema:** `admin`. Primera división administrativa de un país (provincia, departamento, estado). Catálogo global.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `state_id` | integer | no | identidad | PK | Identificador de la provincia o estado. |
-| `country_id` | integer | no |  | FK → countries | País al que pertenece. |
+| `country_id` | integer | no |  | FK → admin.countries | País al que pertenece. |
 | `state_name` | varchar(40) | no |  |  | Nombre de la provincia o estado. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 ### cities
 
-Ciudades o cantones. Catálogo global.
+**Schema:** `admin`. Ciudades o cantones. Catálogo global.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `city_id` | integer | no | identidad | PK | Identificador de la ciudad. |
-| `state_id` | integer | no |  | FK → states | Provincia o estado al que pertenece. |
+| `state_id` | integer | no |  | FK → admin.states | Provincia o estado al que pertenece. |
 | `city_name` | varchar(50) | no |  |  | Nombre de la ciudad. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 ### addresses
 
-Direcciones físicas.
+**Schema:** `admin`. Direcciones físicas.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `address_id` | integer | no | identidad | PK | Identificador de la dirección. |
-| `city_id` | integer | no |  | FK → cities | Ciudad de la dirección. |
+| `city_id` | integer | no |  | FK → admin.cities | Ciudad de la dirección. |
 | `address` | varchar(100) | no |  |  | Señas o línea de dirección. |
 | `zip_code` | varchar(20) | sí |  |  | Código postal; NULL donde no se usa. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 ### clinics_addresses
 
-Direcciones de cada clínica. Es una tabla aparte porque una clínica puede tener varias sedes o cambiar de dirección sin perder el historial.
+**Schema:** `admin`. Direcciones de cada clínica. Es una tabla aparte porque una clínica puede tener varias sedes o cambiar de dirección sin perder el historial.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `clinic_address_id` | integer | no | identidad | PK | Identificador de la asociación. |
-| `clinic_id` | integer | no |  | FK → clinics | Clínica. |
-| `address_id` | integer | no |  | FK → addresses | Dirección de la clínica. |
+| `clinic_id` | integer | no |  | FK → admin.clinics | Clínica. |
+| `address_id` | integer | no |  | FK → admin.addresses | Dirección de la clínica. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 ## Especialidades y servicios
 
 ### specialties
 
-Especialidades médicas (ej. Medicina General, Pediatría). Catálogo global compartido por todas las clínicas.
+**Schema:** `admin`. Especialidades médicas (ej. Medicina General, Pediatría). Catálogo global compartido por todas las clínicas.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -242,17 +253,17 @@ Especialidades médicas (ej. Medicina General, Pediatría). Catálogo global com
 
 ### specialties_per_professionals
 
-Especialidades de cada profesional (RF4). Sin clinic_id: la especialidad es global y la fila solo se alcanza a través del profesional, que sí es de una clínica.
+**Schema:** `admin`. Especialidades de cada profesional (RF4). Sin clinic_id: la especialidad es global y la fila solo se alcanza a través del profesional, que sí es de una clínica.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `specialty_per_professional_id` | integer | no | identidad | PK | Identificador de la asociación. |
-| `professional_id` | integer | no |  | FK → professionals | Profesional. |
-| `specialty_id` | integer | no |  | FK → specialties | Especialidad que tiene el profesional. |
+| `professional_id` | integer | no |  | FK → admin.professionals | Profesional. |
+| `specialty_id` | integer | no |  | FK → admin.specialties | Especialidad que tiene el profesional. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
@@ -260,19 +271,19 @@ Especialidades de cada profesional (RF4). Sin clinic_id: la especialidad es glob
 
 ### services
 
-Catálogo de servicios de la clínica (RF3). La duración del servicio decide el tamaño de la cita (I4). Tenant: clinic_id.
+**Schema:** `admin`. Catálogo de servicios de la clínica (RF3). La duración del servicio decide el tamaño de la cita (I4). Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `service_id` | integer | no | identidad | PK | Identificador del servicio. |
-| `clinic_id` | integer | no |  | FK → clinics | Clínica dueña del servicio. |
+| `clinic_id` | integer | no |  | FK → admin.clinics | Clínica dueña del servicio. |
 | `service_name` | varchar(63) | no |  |  | Nombre del servicio (ej. Consulta general). |
 | `duration_minutes` | integer | no |  |  | Duración en minutos, mayor que 0. Con este valor el trigger de citas calcula el fin de cada cita (I4). |
-| `specialty_id` | integer | no |  | FK → specialties | Especialidad que se requiere para atender el servicio. |
+| `specialty_id` | integer | no |  | FK → admin.specialties | Especialidad que se requiere para atender el servicio. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
@@ -281,23 +292,23 @@ Catálogo de servicios de la clínica (RF3). La duración del servicio decide el
 
 ### services_per_professionals
 
-Servicios que cada profesional está habilitado para atender (RF4). Una cita solo puede reservar una combinación que esté aquí. Tenant: clinic_id.
+**Schema:** `admin`. Servicios que cada profesional está habilitado para atender (RF4). Una cita solo puede reservar una combinación que esté aquí. Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `service_per_professional_id` | integer | no | identidad | PK | Identificador de la asociación. |
 | `clinic_id` | integer | no |  | FK compuesta | Clínica. La comparten las FKs al profesional y al servicio, así que ambos son de la misma clínica (I5). |
-| `professional_id` | integer | no |  | FK → professionals, FK compuesta | Profesional habilitado. |
+| `professional_id` | integer | no |  | FK → admin.professionals, FK compuesta | Profesional habilitado. |
 | `service_id` | integer | no |  | FK compuesta | Servicio que puede atender. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
-- `services_per_professionals_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
-- `services_per_professionals_clinic_id_service_id_fkey` (FK): `FOREIGN KEY (clinic_id, service_id) REFERENCES services(clinic_id, service_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `services_per_professionals_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES admin.users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `services_per_professionals_clinic_id_service_id_fkey` (FK): `FOREIGN KEY (clinic_id, service_id) REFERENCES admin.services(clinic_id, service_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
 - `uq_spp_clinic_prof_service` (UNIQUE): `UNIQUE (clinic_id, professional_id, service_id)` — No se asocia dos veces el mismo servicio al mismo profesional. Es el destino de la FK desde appointments.
 
 **Índices adicionales**
@@ -308,46 +319,46 @@ Servicios que cada profesional está habilitado para atender (RF4). Una cita sol
 
 ### professional_schedules
 
-Bloques concretos de atención de cada profesional (RF5); puede haber varios por día, por ejemplo mañana y tarde. Se definen en la hora local de la clínica y se guardan como instantes absolutos. Tenant: clinic_id.
+**Schema:** `agenda`. Bloques concretos de atención de cada profesional (RF5); puede haber varios por día, por ejemplo mañana y tarde. Se definen en la hora local de la clínica y se guardan como instantes absolutos. Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `schedule_id` | integer | no | identidad | PK | Identificador del bloque. |
 | `clinic_id` | integer | no |  | FK compuesta | Clínica del profesional. |
-| `professional_id` | integer | no |  | FK → professionals, FK compuesta | Profesional que atiende en el bloque. |
+| `professional_id` | integer | no |  | FK → admin.professionals, FK compuesta | Profesional que atiende en el bloque. |
 | `period` | tstzrange | no |  |  | Intervalo [inicio, fin) del bloque de atención. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
-- `professional_schedules_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `professional_schedules_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES admin.users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
 - `ck_schedules_period` (CHECK): `CHECK (((NOT isempty(period)) AND lower_inc(period) AND (NOT upper_inc(period)) AND (NOT lower_inf(period)) AND (NOT upper_inf(period))))` — El intervalo es finito, no vacío y de la forma [inicio, fin).
 - `ex_schedules_overlap` (EXCLUDE): `EXCLUDE USING gist (professional_id WITH =, period WITH &&)` — Un profesional no tiene dos bloques de horario solapados.
 
 **Triggers**
 
-- `trg_professional_schedules_guard` (BEFORE DELETE OR UPDATE, por fila) → `professional_schedules_guard()` — I3: no se borra ni se recorta un bloque de horario que deje fuera citas reservadas (MC006).
+- `trg_professional_schedules_guard` (BEFORE DELETE OR UPDATE, por fila) → `agenda.professional_schedules_guard()` — I3: no se borra ni se recorta un bloque de horario que deje fuera citas reservadas (MC006).
 
 ### blockades
 
-Bloqueos de agenda por vacaciones, permisos u otras ausencias (RF6). Retiran disponibilidad, pero no cancelan citas: las reservadas que caen dentro se listan como conflicto. Tenant: clinic_id.
+**Schema:** `agenda`. Bloqueos de agenda por vacaciones, permisos u otras ausencias (RF6). Retiran disponibilidad, pero no cancelan citas: las reservadas que caen dentro se listan como conflicto. Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `blockade_id` | integer | no | identidad | PK | Identificador del bloqueo. |
 | `clinic_id` | integer | no |  | FK compuesta | Clínica del profesional. |
-| `professional_id` | integer | no |  | FK → professionals, FK compuesta | Profesional ausente. |
+| `professional_id` | integer | no |  | FK → admin.professionals, FK compuesta | Profesional ausente. |
 | `period` | tstzrange | no |  |  | Intervalo [inicio, fin) de la ausencia. Puede solaparse con otros bloqueos. |
 | `reason` | text | sí |  |  | Motivo de la ausencia (ej. Vacaciones); opcional. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
-- `blockades_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `blockades_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES admin.users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
 - `ck_blockades_period` (CHECK): `CHECK (((NOT isempty(period)) AND lower_inc(period) AND (NOT upper_inc(period)) AND (NOT lower_inf(period)) AND (NOT upper_inf(period))))` — El intervalo es finito, no vacío y de la forma [inicio, fin).
 
 **Índices adicionales**
@@ -356,30 +367,30 @@ Bloqueos de agenda por vacaciones, permisos u otras ausencias (RF6). Retiran dis
 
 ### professional_contacts
 
-Datos de contacto de los profesionales, para que recepción pueda ubicarlos. Separada de patient_contacts porque estos datos no van a la bitácora (RF18 solo aplica a pacientes). Tenant: clinic_id.
+**Schema:** `admin`. Datos de contacto de los profesionales, para que recepción pueda ubicarlos. Separada de patient_contacts porque estos datos no van a la bitácora (RF18 solo aplica a pacientes). Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `contact_id` | integer | no | identidad | PK | Identificador del contacto. |
 | `clinic_id` | integer | no |  | FK compuesta | Clínica del profesional. |
-| `professional_id` | integer | no |  | FK → professionals, FK compuesta | Profesional. |
-| `contact_type_id` | integer | no |  | FK → contact_types | Tipo de contacto (teléfono o correo). |
+| `professional_id` | integer | no |  | FK → admin.professionals, FK compuesta | Profesional. |
+| `contact_type_id` | integer | no |  | FK → admin.contact_types | Tipo de contacto (teléfono o correo). |
 | `contact_value` | varchar(320) | no |  |  | Número de teléfono o dirección de correo. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
-- `professional_contacts_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `professional_contacts_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES admin.users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
 - `professional_contacts_professional_id_contact_type_id_conta_key` (UNIQUE): `UNIQUE (professional_id, contact_type_id, contact_value)`
 
 ## Pacientes
 
 ### genders
 
-Géneros que puede indicar un paciente. Ids fijos.
+**Schema:** `clinical`. Géneros que puede indicar un paciente. Ids fijos.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -388,21 +399,21 @@ Géneros que puede indicar un paciente. Ids fijos.
 
 ### patients
 
-Pacientes de la clínica (RF14). No son usuarios del sistema ni tienen credenciales. Una misma persona atendida en dos clínicas son dos filas independientes, una por clínica (I5). Tenant: clinic_id.
+**Schema:** `clinical`. Pacientes de la clínica (RF14). No son usuarios del sistema ni tienen credenciales. Una misma persona atendida en dos clínicas son dos filas independientes, una por clínica (I5). Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `patient_id` | integer | no | identidad | PK | Identificador del paciente. |
-| `clinic_id` | integer | no |  | FK → clinics | Clínica que registró al paciente. |
+| `clinic_id` | integer | no |  | FK → admin.clinics | Clínica que registró al paciente. |
 | `identification` | varchar(30) | no |  |  | Número de identificación (cédula, pasaporte); único dentro de la clínica. |
 | `name` | varchar(50) | no |  |  | Nombre o nombres. |
 | `last_name` | varchar(50) | no |  |  | Apellidos. |
 | `birth_date` | date | no |  |  | Fecha de nacimiento. |
-| `gender_id` | smallint | sí |  | FK → genders | Género; NULL si el paciente no lo indica. |
+| `gender_id` | smallint | sí |  | FK → clinical.genders | Género; NULL si el paciente no lo indica. |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
@@ -411,7 +422,7 @@ Pacientes de la clínica (RF14). No son usuarios del sistema ni tienen credencia
 
 ### contact_types
 
-Tipos de dato de contacto. Catálogo global.
+**Schema:** `admin`. Tipos de dato de contacto. Catálogo global.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -420,27 +431,27 @@ Tipos de dato de contacto. Catálogo global.
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 ### patient_contacts
 
-Datos de contacto de los pacientes (RF14). Dato sensible: toda lectura y escritura se registra en audit_logs (RF18). Tenant: clinic_id.
+**Schema:** `clinical`. Datos de contacto de los pacientes (RF14). Dato sensible: toda lectura y escritura se registra en audit_logs (RF18). Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `contact_id` | integer | no | identidad | PK | Identificador del contacto. |
 | `clinic_id` | integer | no |  | FK compuesta | Clínica del paciente. |
 | `patient_id` | integer | no |  | FK compuesta | Paciente. |
-| `contact_type_id` | integer | no |  | FK → contact_types | Tipo de contacto (teléfono o correo). |
+| `contact_type_id` | integer | no |  | FK → admin.contact_types | Tipo de contacto (teléfono o correo). |
 | `contact_value` | varchar(320) | no |  |  | Número de teléfono o dirección de correo. Hasta 320 caracteres, el máximo de un correo (RFC 5321). |
 | `is_active` | boolean | no | `true` |  | Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
-- `patient_contacts_clinic_id_patient_id_fkey` (FK): `FOREIGN KEY (clinic_id, patient_id) REFERENCES patients(clinic_id, patient_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `patient_contacts_clinic_id_patient_id_fkey` (FK): `FOREIGN KEY (clinic_id, patient_id) REFERENCES clinical.patients(clinic_id, patient_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
 
 **Índices adicionales**
 
@@ -450,7 +461,7 @@ Datos de contacto de los pacientes (RF14). Dato sensible: toda lectura y escritu
 
 ### appointment_statuses
 
-Estados de una cita (RF13), con ids fijos porque los triggers y los CHECK los usan como constantes.
+**Schema:** `agenda`. Estados de una cita (RF13), con ids fijos porque los triggers y los CHECK los usan como constantes.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -460,16 +471,16 @@ Estados de una cita (RF13), con ids fijos porque los triggers y los CHECK los us
 
 ### appointments
 
-Citas (RF9 a RF13). Solo las reservadas ocupan espacio en la agenda. Una cita no se mueve: reprogramar crea una cita nueva y deja esta como reprogramada (RF10). Tenant: clinic_id.
+**Schema:** `agenda`. Citas (RF9 a RF13). Solo las reservadas ocupan espacio en la agenda. Una cita no se mueve: reprogramar crea una cita nueva y deja esta como reprogramada (RF10). Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `appointment_id` | bigint | no | identidad | PK | Identificador de la cita. BIGINT porque es la tabla de mayor volumen. |
 | `clinic_id` | integer | no |  | FK compuesta | Clínica de la cita. La comparten todas las FKs compuestas, así que paciente, profesional, servicio y cancelador son de esta clínica (I5). |
 | `patient_id` | integer | no |  | FK compuesta | Paciente. |
-| `professional_id` | integer | no |  | FK → professionals, FK compuesta | Profesional que atiende. |
+| `professional_id` | integer | no |  | FK → admin.professionals, FK compuesta | Profesional que atiende. |
 | `service_id` | integer | no |  | FK compuesta | Servicio reservado; su duración define la de la cita (I4). |
-| `appointment_status_id` | smallint | no | `1` | FK → appointment_statuses | Estado actual; toda cita nace reservada (1). Las transiciones las controla trg_appointments_30_check_status. |
+| `appointment_status_id` | smallint | no | `1` | FK → agenda.appointment_statuses | Estado actual; toda cita nace reservada (1). Las transiciones las controla trg_appointments_30_check_status. |
 | `period` | tstzrange | no |  |  | Intervalo [inicio, fin). La API envía solo el inicio y el trigger trg_appointments_10_set_period calcula el fin con la duración del servicio (I4). |
 | `appointment_description` | text | sí |  |  | Motivo de la consulta; opcional. |
 | `cancel_reason` | text | sí |  |  | Motivo de la cancelación (RF11). Presente si y solo si la cita está cancelada. |
@@ -478,16 +489,16 @@ Citas (RF9 a RF13). Solo las reservadas ocupan espacio en la agenda. Una cita no
 | `rescheduled_from_id` | bigint | sí |  | FK compuesta, UK | En una cita creada al reprogramar, la cita original que reemplaza (RF10). |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
-- `appointments_clinic_id_cancelled_by_fkey` (FK): `FOREIGN KEY (clinic_id, cancelled_by) REFERENCES users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
-- `appointments_clinic_id_patient_id_fkey` (FK): `FOREIGN KEY (clinic_id, patient_id) REFERENCES patients(clinic_id, patient_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
-- `appointments_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
-- `appointments_clinic_id_professional_id_service_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id, service_id) REFERENCES services_per_professionals(clinic_id, professional_id, service_id)` — Solo se reserva un servicio que el profesional tiene habilitado (RF4), en la misma clínica.
-- `appointments_clinic_id_rescheduled_from_id_fkey` (FK): `FOREIGN KEY (clinic_id, rescheduled_from_id) REFERENCES appointments(clinic_id, appointment_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
-- `appointments_clinic_id_service_id_fkey` (FK): `FOREIGN KEY (clinic_id, service_id) REFERENCES services(clinic_id, service_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `appointments_clinic_id_cancelled_by_fkey` (FK): `FOREIGN KEY (clinic_id, cancelled_by) REFERENCES admin.users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `appointments_clinic_id_patient_id_fkey` (FK): `FOREIGN KEY (clinic_id, patient_id) REFERENCES clinical.patients(clinic_id, patient_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `appointments_clinic_id_professional_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id) REFERENCES admin.users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `appointments_clinic_id_professional_id_service_id_fkey` (FK): `FOREIGN KEY (clinic_id, professional_id, service_id) REFERENCES admin.services_per_professionals(clinic_id, professional_id, service_id)` — Solo se reserva un servicio que el profesional tiene habilitado (RF4), en la misma clínica.
+- `appointments_clinic_id_rescheduled_from_id_fkey` (FK): `FOREIGN KEY (clinic_id, rescheduled_from_id) REFERENCES agenda.appointments(clinic_id, appointment_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `appointments_clinic_id_service_id_fkey` (FK): `FOREIGN KEY (clinic_id, service_id) REFERENCES admin.services(clinic_id, service_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
 - `uq_appointments_clinic_appointment` (UNIQUE): `UNIQUE (clinic_id, appointment_id)` — Destino de las FKs compuestas (clinic_id, appointment_id) que obligan a que la cita sea de la misma clínica (I5).
 - `uq_appointments_rescheduled_from` (UNIQUE): `UNIQUE (rescheduled_from_id)` — Una cita se reprograma una sola vez (RF10).
 - `ck_appointments_cancellation` (CHECK): `CHECK ( CASE WHEN (appointment_status_id = 4) THEN (num_nonnulls(cancel_reason, cancelled_by, cancelled_at) = 3) ELSE (num_nonnulls(cancel_reason, cancelled_by, cancelled_at) = 0) END)` — Cancelada si y solo si están los tres datos de la cancelación (RF11); en cualquier otro estado los tres van vacíos.
@@ -503,13 +514,13 @@ Citas (RF9 a RF13). Solo las reservadas ocupan espacio en la agenda. Una cita no
 
 **Triggers**
 
-- `trg_appointments_10_set_period` (BEFORE INSERT OR UPDATE, por fila) → `appointments_set_period()` — I4: al insertar, calcula el fin de la cita con la duración del servicio. Al actualizar, impide mover la cita o cambiarle servicio, profesional, paciente o clínica (MC004).
-- `trg_appointments_20_check_agenda` (BEFORE INSERT, por fila) → `appointments_check_agenda()` — I3: la cita cae dentro del horario del profesional y fuera de sus bloqueos (MC001). Bloquea FOR SHARE los bloques de horario usados hasta el commit.
-- `trg_appointments_30_check_status` (BEFORE INSERT OR UPDATE, por fila) → `appointments_check_status()` — RF13: toda cita nace reservada y los estados finales no admiten cambios (MC002). RF12: atendida o ausente solo después del inicio (MC003).
+- `trg_appointments_10_set_period` (BEFORE INSERT OR UPDATE, por fila) → `agenda.appointments_set_period()` — I4: al insertar, calcula el fin de la cita con la duración del servicio. Al actualizar, impide mover la cita o cambiarle servicio, profesional, paciente o clínica (MC004).
+- `trg_appointments_20_check_agenda` (BEFORE INSERT, por fila) → `agenda.appointments_check_agenda()` — I3: la cita cae dentro del horario del profesional y fuera de sus bloqueos (MC001). Bloquea FOR SHARE los bloques de horario usados hasta el commit.
+- `trg_appointments_30_check_status` (BEFORE INSERT OR UPDATE, por fila) → `agenda.appointments_check_status()` — RF13: toda cita nace reservada y los estados finales no admiten cambios (MC002). RF12: atendida o ausente solo después del inicio (MC003).
 
 ### clinical_notes
 
-Notas clínicas (RF15), el dato más sensible del sistema. Una por cita atendida, escrita por el profesional de esa cita; el autor no se repite aquí porque ya es appointments.professional_id. Toda lectura y escritura se registra en audit_logs (RF18). Tenant: clinic_id.
+**Schema:** `clinical`. Notas clínicas (RF15), el dato más sensible del sistema. Una por cita atendida, escrita por el profesional de esa cita; el autor no se repite aquí porque ya es appointments.professional_id. Toda lectura y escritura se registra en audit_logs (RF18). Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -519,17 +530,17 @@ Notas clínicas (RF15), el dato más sensible del sistema. Una por cita atendida
 | `note_text` | text | no |  |  | Contenido clínico de la nota. |
 | `created_at` | timestamptz | no | `now()` |  | Instante de creación del registro. |
 | `updated_at` | timestamptz | no | `now()` |  | Instante de la última modificación; lo mantiene el trigger trg_set_updated_at. |
-| `updated_by` | integer | no |  | FK → users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
+| `updated_by` | integer | no |  | FK → admin.users | Usuario que hizo la última modificación (1 = Sistema en los datos iniciales). |
 
 **Restricciones**
 
-- `clinical_notes_clinic_id_appointment_id_fkey` (FK): `FOREIGN KEY (clinic_id, appointment_id) REFERENCES appointments(clinic_id, appointment_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `clinical_notes_clinic_id_appointment_id_fkey` (FK): `FOREIGN KEY (clinic_id, appointment_id) REFERENCES agenda.appointments(clinic_id, appointment_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
 
 ## Bitácoras
 
 ### event_types
 
-Acciones que registra la bitácora de auditoría. Ids fijos.
+**Schema:** `clinical`. Acciones que registra la bitácora de auditoría. Ids fijos.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -539,7 +550,7 @@ Acciones que registra la bitácora de auditoría. Ids fijos.
 
 ### data_objects
 
-Tipos de dato sensible que vigila la bitácora de auditoría (RF18). Ids fijos.
+**Schema:** `clinical`. Tipos de dato sensible que vigila la bitácora de auditoría (RF18). Ids fijos.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -549,15 +560,15 @@ Tipos de dato sensible que vigila la bitácora de auditoría (RF18). Ids fijos.
 
 ### audit_logs
 
-Bitácora de auditoría append-only (RF18, RF19): quién leyó o escribió qué dato sensible, de cuál paciente y cuándo. Ningún rol tiene UPDATE, DELETE ni TRUNCATE, y los triggers los rechazan aunque alguien los conceda (I6). Tenant: clinic_id.
+**Schema:** `clinical`. Bitácora de auditoría append-only (RF18, RF19): quién leyó o escribió qué dato sensible, de cuál paciente y cuándo. Ningún rol tiene UPDATE, DELETE ni TRUNCATE, y los triggers los rechazan aunque alguien los conceda (I6). Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `log_id` | bigint | no | identidad | PK | Identificador del registro. |
 | `clinic_id` | integer | no |  | FK compuesta | Clínica donde ocurrió el acceso. |
 | `user_id` | integer | no |  | FK compuesta | Quién: usuario que hizo el acceso. |
-| `event_type_id` | smallint | no |  | FK → event_types | Qué hizo: lectura, creación, modificación o baja. |
-| `data_object_id` | smallint | no |  | FK → data_objects | Sobre qué tipo de dato: nota clínica o contacto del paciente. |
+| `event_type_id` | smallint | no |  | FK → clinical.event_types | Qué hizo: lectura, creación, modificación o baja. |
+| `data_object_id` | smallint | no |  | FK → clinical.data_objects | Sobre qué tipo de dato: nota clínica o contacto del paciente. |
 | `object_id` | bigint | no |  |  | Id del registro tocado. Sin FK porque apunta a una tabla distinta según data_object_id. |
 | `patient_id` | integer | no |  | FK compuesta | Sobre cuál paciente. |
 | `description` | varchar(255) | no |  |  | Resumen legible del evento. |
@@ -566,8 +577,8 @@ Bitácora de auditoría append-only (RF18, RF19): quién leyó o escribió qué 
 
 **Restricciones**
 
-- `audit_logs_clinic_id_patient_id_fkey` (FK): `FOREIGN KEY (clinic_id, patient_id) REFERENCES patients(clinic_id, patient_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
-- `audit_logs_clinic_id_user_id_fkey` (FK): `FOREIGN KEY (clinic_id, user_id) REFERENCES users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `audit_logs_clinic_id_patient_id_fkey` (FK): `FOREIGN KEY (clinic_id, patient_id) REFERENCES clinical.patients(clinic_id, patient_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
+- `audit_logs_clinic_id_user_id_fkey` (FK): `FOREIGN KEY (clinic_id, user_id) REFERENCES admin.users(clinic_id, user_id)` — Misma clínica: el motor rechaza la relación entre registros de clínicas distintas (I5).
 
 **Índices adicionales**
 
@@ -577,12 +588,12 @@ Bitácora de auditoría append-only (RF18, RF19): quién leyó o escribió qué 
 
 **Triggers**
 
-- `trg_audit_logs_append_only` (BEFORE DELETE OR UPDATE, por fila) → `audit_logs_append_only()` — I6: rechaza UPDATE y DELETE (MC005).
-- `trg_audit_logs_no_truncate` (BEFORE TRUNCATE, por sentencia) → `audit_logs_append_only()` — I6: rechaza TRUNCATE (MC005).
+- `trg_audit_logs_append_only` (BEFORE DELETE OR UPDATE, por fila) → `clinical.audit_logs_append_only()` — I6: rechaza UPDATE y DELETE (MC005).
+- `trg_audit_logs_no_truncate` (BEFORE TRUNCATE, por sentencia) → `clinical.audit_logs_append_only()` — I6: rechaza TRUNCATE (MC005).
 
 ### severities
 
-Niveles de gravedad de system_errors_logs. Ids fijos.
+**Schema:** `admin`. Niveles de gravedad de system_errors_logs. Ids fijos.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -592,12 +603,12 @@ Niveles de gravedad de system_errors_logs. Ids fijos.
 
 ### system_errors_logs
 
-Registro técnico de errores de la aplicación, para diagnóstico. No guarda datos de negocio ni pertenece a una clínica.
+**Schema:** `admin`. Registro técnico de errores de la aplicación, para diagnóstico. No guarda datos de negocio ni pertenece a una clínica.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
 | `error_id` | bigint | no | identidad | PK | Identificador del error. |
-| `severity_id` | smallint | no |  | FK → severities | Gravedad. |
+| `severity_id` | smallint | no |  | FK → admin.severities | Gravedad. |
 | `process_uuid` | uuid | sí |  |  | Id de correlación de la petición o proceso; opcional. |
 | `process_name` | varchar(100) | no |  |  | Proceso o ruta donde ocurrió (ej. POST /appointments). |
 | `step_name` | varchar(100) | sí |  |  | Paso dentro del proceso; opcional. |

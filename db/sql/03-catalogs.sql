@@ -7,6 +7,9 @@
 -- profesionales, pacientes, citas) van en otro script.
 -- =============================================================================
 
+-- Las tablas viven en los schemas admin, agenda y clinical (ver 01-schema.sql).
+SET search_path = admin, agenda, clinical, public;
+
 BEGIN;
 
 -- roles y el usuario Sistema se referencian mutuamente: las FKs de updated_by son
