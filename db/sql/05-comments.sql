@@ -7,7 +7,17 @@
 -- llaves) para escribir docs/diccionario-datos.md.
 -- =============================================================================
 
+-- Las tablas viven en los schemas admin, agenda y clinical (ver 01-schema.sql).
+SET search_path = admin, agenda, clinical, public;
+
 BEGIN;
+
+COMMENT ON SCHEMA admin IS
+    'Servicio admin (RF1–RF4): clínicas, usuarios, roles y permisos, geografía, especialidades, catálogo de servicios y profesionales. También el registro de errores del sistema.';
+COMMENT ON SCHEMA agenda IS
+    'Servicio agenda (RF5–RF13, RF16, RF20, RF21): horarios de atención, bloqueos y citas. Es el schema de mayor carga.';
+COMMENT ON SCHEMA clinical IS
+    'Servicio clinical (RF14, RF15, RF18, RF19): pacientes y sus contactos, notas clínicas y la bitácora de auditoría append-only.';
 
 -- Columnas de control: misma descripción en todas las tablas que las tienen.
 -- Las que necesitan algo más específico se sobrescriben más abajo.
@@ -16,11 +26,11 @@ DECLARE
     c RECORD;
 BEGIN
     FOR c IN
-        SELECT table_name, column_name FROM information_schema.columns
-         WHERE table_schema = 'public'
+        SELECT table_schema, table_name, column_name FROM information_schema.columns
+         WHERE table_schema IN ('admin', 'agenda', 'clinical')
            AND column_name IN ('is_active', 'created_at', 'updated_at', 'updated_by')
     LOOP
-        EXECUTE format('COMMENT ON COLUMN %I.%I IS %L', c.table_name, c.column_name,
+        EXECUTE format('COMMENT ON COLUMN %I.%I.%I IS %L', c.table_schema, c.table_name, c.column_name,
             CASE c.column_name
                 WHEN 'is_active'  THEN 'Baja lógica: false retira el registro sin borrarlo, para no romper las referencias históricas.'
                 WHEN 'created_at' THEN 'Instante de creación del registro.'

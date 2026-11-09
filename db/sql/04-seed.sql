@@ -13,6 +13,9 @@
 -- token de Keycloak se asocia con su fila de users y, por ella, con su clínica.
 -- =============================================================================
 
+-- Las tablas viven en los schemas admin, agenda y clinical (ver 01-schema.sql).
+SET search_path = admin, agenda, clinical, public;
+
 BEGIN;
 
 -- Elección determinista: un número en [0, n) que depende solo del texto.

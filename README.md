@@ -507,7 +507,11 @@ Se compararon dos estrategias:
 | Escala | El catálogo de Postgres crece con cada clínica | Una sola copia de las tablas; se puede particionar por `clinicId` más adelante |
 
 Se eligió la columna discriminadora. El alta de clínica no requiere DDL ni privilegios elevados, el esquema se
-mantiene una sola vez y la Etapa 2 (plataforma distribuida y analítica) parte de tablas únicas. Su debilidad, que una
+mantiene una sola vez y la Etapa 2 (plataforma distribuida y analítica) parte de tablas únicas.
+
+> La base sí tiene tres schemas (`admin`, `agenda` y `clinical`), pero **son uno por servicio, no uno por
+> clínica**. Todas las clínicas comparten las mismas tablas, y el tenant sigue siendo `clinicId`. Ver
+> `docs/diseno-servicios.md`, sección 5. Su debilidad, que una
 consulta olvide el filtro, se mitiga en tres capas:
 1. El `clinicId` sale siempre de la identidad (token → `Users.keycloakSub` → `Users.clinicId`), nunca de un parámetro de la petición.
 2. Las FKs compuestas hacen imposible, en el motor, que un registro de una clínica apunte a otro de otra clínica.

@@ -41,6 +41,11 @@ CREATE DATABASE medicitas OWNER mc_owner;
 REVOKE ALL ON DATABASE medicitas FROM PUBLIC;
 GRANT CONNECT ON DATABASE medicitas TO mc_app;
 
+-- Las tablas viven en los schemas admin, agenda y clinical (01-schema.sql). Con este
+-- search_path, las consultas de la API las encuentran sin escribir el schema. Se mantiene
+-- después de SET LOCAL ROLE, porque pertenece a la sesión de mc_app y no al perfil.
+ALTER ROLE mc_app IN DATABASE medicitas SET search_path = admin, agenda, clinical, public;
+
 
 
 -- Keycloak guarda su estado en su propia base, sin acceso a la de la aplicación.

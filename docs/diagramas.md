@@ -13,7 +13,7 @@ flowchart LR
         admin["admin<br/>Node 24 + Express 5<br/>puerto 3000"]
         kc["keycloak<br/>Keycloak 26.7<br/>realm medicitas<br/>puerto 8080"]
         subgraph pg["db · PostgreSQL 18"]
-            medicitas[("base medicitas<br/>dueño: mc_owner")]
+            medicitas[("base medicitas<br/>dueño: mc_owner<br/>schemas admin, agenda, clinical")]
             kcdb[("base keycloak<br/>dueño: keycloak")]
         end
         redis["redis<br/>Redis 8.2, solo caché<br/>sin puerto publicado"]

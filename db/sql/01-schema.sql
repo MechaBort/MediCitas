@@ -7,6 +7,14 @@
 --
 -- Lo ejecuta mc_owner (db/init/00-init.sh), que queda como dueño de todo.
 --
+-- Una sola base con un schema por servicio (docs/diseno-servicios.md, sección 5):
+--   admin     clínicas, usuarios, permisos, geografía, catálogo de servicios y profesionales
+--   agenda    horarios, bloqueos y citas
+--   clinical  pacientes, notas clínicas y bitácora de auditoría
+-- Los schemas separan servicios, no clínicas: el tenant sigue siendo la columna clinic_id.
+-- Cada CREATE TABLE nombra su schema; el resto del SQL usa el search_path. Por eso los
+-- nombres de tabla deben ser únicos entre los tres schemas.
+--
 -- Códigos de error propios (SQLSTATE) que lanzan los triggers, para que la API
 -- los traduzca a códigos HTTP:
 --   MC001  la cita cae fuera del horario o dentro de un bloqueo        (I3)
@@ -20,7 +28,16 @@
 BEGIN;
 
 -- Necesaria para EXCLUDE e índices GiST que combinan un entero (=) con un rango (&&).
-CREATE EXTENSION IF NOT EXISTS btree_gist;
+-- Se nombra public para que no caiga en el primer schema del search_path.
+CREATE EXTENSION IF NOT EXISTS btree_gist SCHEMA public;
+
+CREATE SCHEMA admin;
+CREATE SCHEMA agenda;
+CREATE SCHEMA clinical;
+
+-- Los nombres sin schema (FKs, índices, triggers) se buscan en este orden. Los scripts
+-- 02 a 05 empiezan con la misma línea.
+SET search_path = admin, agenda, clinical, public;
 
 
 -- =============================================================================
@@ -31,7 +48,7 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 -- Ids fijos (1 platform_admin, 2 clinic_admin, 3 reception, 4 professional):
 -- los CHECK de users y professionals los usan como constantes.
-CREATE TABLE roles (
+CREATE TABLE admin.roles (
     role_id         SMALLINT PRIMARY KEY,
     role_name       VARCHAR(50) NOT NULL UNIQUE,      -- mismo nombre que el rol en Keycloak
     description     VARCHAR(150),
@@ -41,7 +58,7 @@ CREATE TABLE roles (
     updated_by      INT NOT NULL
 );
 
-CREATE TABLE clinics (
+CREATE TABLE admin.clinics (
     clinic_id       INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_code     VARCHAR(30) NOT NULL UNIQUE,      -- identificador de la clínica (RF1)
     clinic_name     VARCHAR(75) NOT NULL,
@@ -52,7 +69,7 @@ CREATE TABLE clinics (
     updated_by      INT NOT NULL
 );
 
-CREATE TABLE users (
+CREATE TABLE admin.users (
     user_id         INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     keycloak_sub    UUID NOT NULL UNIQUE,             -- claim `sub` del token de Keycloak
     clinic_id       INT REFERENCES clinics,           -- NULL solo para el administrador de plataforma (RF2)
@@ -69,7 +86,7 @@ CREATE TABLE users (
 );
 
 -- Especialización 1:1 de users; la clínica se toma de users.
-CREATE TABLE professionals (
+CREATE TABLE admin.professionals (
     user_id         INT PRIMARY KEY,
     role_id         SMALLINT NOT NULL DEFAULT 4,      -- existe solo para la FK que garantiza el rol
     license_number  VARCHAR(30) NOT NULL,             -- código del colegio profesional
@@ -84,7 +101,7 @@ CREATE TABLE professionals (
         REFERENCES users (user_id, role_id)
 );
 
-CREATE TABLE permissions (
+CREATE TABLE admin.permissions (
     permission_id   INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     permission_name VARCHAR(50) NOT NULL UNIQUE,
     description     VARCHAR(200),
@@ -94,7 +111,7 @@ CREATE TABLE permissions (
     updated_by      INT NOT NULL REFERENCES users DEFERRABLE INITIALLY DEFERRED
 );
 
-CREATE TABLE permissions_per_roles (
+CREATE TABLE admin.permissions_per_roles (
     permission_per_role_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     role_id         SMALLINT NOT NULL REFERENCES roles,
     permission_id   INT NOT NULL REFERENCES permissions,
@@ -110,7 +127,7 @@ CREATE TABLE permissions_per_roles (
 -- GEOGRAFÍA
 -- =============================================================================
 
-CREATE TABLE countries (
+CREATE TABLE admin.countries (
     country_id      INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     iso_code        CHAR(3) NOT NULL UNIQUE,
     country_name    VARCHAR(50) NOT NULL,
@@ -120,7 +137,7 @@ CREATE TABLE countries (
     updated_by      INT NOT NULL REFERENCES users DEFERRABLE INITIALLY DEFERRED
 );
 
-CREATE TABLE states (
+CREATE TABLE admin.states (
     state_id        INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     country_id      INT NOT NULL REFERENCES countries,
     state_name      VARCHAR(40) NOT NULL,
@@ -130,7 +147,7 @@ CREATE TABLE states (
     updated_by      INT NOT NULL REFERENCES users DEFERRABLE INITIALLY DEFERRED
 );
 
-CREATE TABLE cities (
+CREATE TABLE admin.cities (
     city_id         INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     state_id        INT NOT NULL REFERENCES states,
     city_name       VARCHAR(50) NOT NULL,
@@ -140,7 +157,7 @@ CREATE TABLE cities (
     updated_by      INT NOT NULL REFERENCES users DEFERRABLE INITIALLY DEFERRED
 );
 
-CREATE TABLE addresses (
+CREATE TABLE admin.addresses (
     address_id      INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     city_id         INT NOT NULL REFERENCES cities,
     address         VARCHAR(100) NOT NULL,
@@ -151,7 +168,7 @@ CREATE TABLE addresses (
     updated_by      INT NOT NULL REFERENCES users DEFERRABLE INITIALLY DEFERRED
 );
 
-CREATE TABLE clinics_addresses (
+CREATE TABLE admin.clinics_addresses (
     clinic_address_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL REFERENCES clinics,
     address_id      INT NOT NULL REFERENCES addresses,
@@ -166,13 +183,13 @@ CREATE TABLE clinics_addresses (
 -- ESPECIALIDADES Y SERVICIOS
 -- =============================================================================
 
-CREATE TABLE specialties (
+CREATE TABLE admin.specialties (
     specialty_id    INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     specialty_name  VARCHAR(50) NOT NULL UNIQUE
 );
 
 -- Sin clinic_id: las especialidades son globales y esta tabla solo se lee a través del profesional.
-CREATE TABLE specialties_per_professionals (
+CREATE TABLE admin.specialties_per_professionals (
     specialty_per_professional_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     professional_id INT NOT NULL REFERENCES professionals (user_id),
     specialty_id    INT NOT NULL REFERENCES specialties,
@@ -184,7 +201,7 @@ CREATE TABLE specialties_per_professionals (
 );
 
 -- RF3
-CREATE TABLE services (
+CREATE TABLE admin.services (
     service_id      INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL REFERENCES clinics,
     service_name    VARCHAR(63) NOT NULL,
@@ -198,7 +215,7 @@ CREATE TABLE services (
 );
 
 -- RF4: servicios que el profesional está habilitado para atender.
-CREATE TABLE services_per_professionals (
+CREATE TABLE admin.services_per_professionals (
     service_per_professional_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL,
     professional_id INT NOT NULL REFERENCES professionals (user_id),
@@ -220,7 +237,7 @@ CREATE TABLE services_per_professionals (
 -- =============================================================================
 
 -- RF5: cada fila es un bloque concreto de atención (p. ej. lunes 2026-11-02 08:00–12:00).
-CREATE TABLE professional_schedules (
+CREATE TABLE agenda.professional_schedules (
     schedule_id     INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL,
     professional_id INT NOT NULL REFERENCES professionals (user_id),
@@ -238,7 +255,7 @@ CREATE TABLE professional_schedules (
 );
 
 -- RF6: vacaciones o permisos. Pueden solaparse entre sí.
-CREATE TABLE blockades (
+CREATE TABLE agenda.blockades (
     blockade_id     INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL,
     professional_id INT NOT NULL REFERENCES professionals (user_id),
@@ -258,13 +275,13 @@ CREATE TABLE blockades (
 -- PACIENTES
 -- =============================================================================
 
-CREATE TABLE genders (
+CREATE TABLE clinical.genders (
     gender_id       SMALLINT PRIMARY KEY,
     gender_name     VARCHAR(30) NOT NULL UNIQUE
 );
 
 -- RF14: no son usuarios del sistema ni tienen credenciales.
-CREATE TABLE patients (
+CREATE TABLE clinical.patients (
     patient_id      INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL REFERENCES clinics,
     identification  VARCHAR(30) NOT NULL,
@@ -280,7 +297,7 @@ CREATE TABLE patients (
     CONSTRAINT uq_patients_clinic_patient UNIQUE (clinic_id, patient_id)  -- destino de las FKs compuestas
 );
 
-CREATE TABLE contact_types (
+CREATE TABLE admin.contact_types (
     contact_type_id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     contact_type_name VARCHAR(50) NOT NULL UNIQUE,
     is_active       BOOLEAN NOT NULL DEFAULT true,
@@ -290,7 +307,7 @@ CREATE TABLE contact_types (
 );
 
 -- Dato sensible: toda lectura y escritura se registra en la bitácora (RF18).
-CREATE TABLE patient_contacts (
+CREATE TABLE clinical.patient_contacts (
     contact_id      INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL,
     patient_id      INT NOT NULL,
@@ -303,7 +320,7 @@ CREATE TABLE patient_contacts (
     FOREIGN KEY (clinic_id, patient_id) REFERENCES patients (clinic_id, patient_id)
 );
 
-CREATE TABLE professional_contacts (
+CREATE TABLE admin.professional_contacts (
     contact_id      INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL,
     professional_id INT NOT NULL REFERENCES professionals (user_id),
@@ -323,13 +340,13 @@ CREATE TABLE professional_contacts (
 -- =============================================================================
 
 -- 1 reservada, 2 atendida, 3 ausente, 4 cancelada, 5 reprogramada
-CREATE TABLE appointment_statuses (
+CREATE TABLE agenda.appointment_statuses (
     appointment_status_id SMALLINT PRIMARY KEY,
     status_name     VARCHAR(12) NOT NULL UNIQUE,
     is_final        BOOLEAN NOT NULL                  -- los estados finales no admiten salida (RF13)
 );
 
-CREATE TABLE appointments (
+CREATE TABLE agenda.appointments (
     appointment_id  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL,
     patient_id      INT NOT NULL,
@@ -375,7 +392,7 @@ CREATE TABLE appointments (
 );
 
 -- RF15: el dato más sensible. El autor es el profesional de la cita, por eso no se repite aquí.
-CREATE TABLE clinical_notes (
+CREATE TABLE clinical.clinical_notes (
     clinical_note_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL,
     appointment_id  BIGINT NOT NULL UNIQUE,           -- una nota por cita
@@ -391,26 +408,26 @@ CREATE TABLE clinical_notes (
 -- BITÁCORAS
 -- =============================================================================
 
-CREATE TABLE event_types (
+CREATE TABLE clinical.event_types (
     event_type_id   SMALLINT PRIMARY KEY,
     name            VARCHAR(50) NOT NULL UNIQUE,
     description     VARCHAR(150) NOT NULL
 );
 
-CREATE TABLE data_objects (
+CREATE TABLE clinical.data_objects (
     data_object_id  SMALLINT PRIMARY KEY,
     name            VARCHAR(50) NOT NULL UNIQUE,
     description     VARCHAR(100) NOT NULL
 );
 
-CREATE TABLE severities (
+CREATE TABLE admin.severities (
     severity_id     SMALLINT PRIMARY KEY,
     name            VARCHAR(50) NOT NULL UNIQUE,
     description     VARCHAR(100) NOT NULL
 );
 
 -- RF18 / RF19: append-only, protegida en el motor (I6).
-CREATE TABLE audit_logs (
+CREATE TABLE clinical.audit_logs (
     log_id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL,
     user_id         INT NOT NULL,                     -- quién
@@ -425,7 +442,7 @@ CREATE TABLE audit_logs (
     FOREIGN KEY (clinic_id, patient_id) REFERENCES patients (clinic_id, patient_id)
 );
 
-CREATE TABLE system_errors_logs (
+CREATE TABLE admin.system_errors_logs (
     error_id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     severity_id     SMALLINT NOT NULL REFERENCES severities,
     process_uuid    UUID,
@@ -449,8 +466,12 @@ ALTER TABLE clinics ADD FOREIGN KEY (updated_by) REFERENCES users DEFERRABLE INI
 -- por eso los de appointments llevan número (10, 20, 30).
 -- =============================================================================
 
--- updated_at se mantiene solo, en toda tabla que lo tenga.
-CREATE FUNCTION set_updated_at() RETURNS trigger
+-- Las funciones de los triggers van en el schema de su tabla y fijan su propio
+-- search_path: así encuentran las tablas sin depender de quién dispare el trigger.
+
+-- updated_at se mantiene solo, en toda tabla que lo tenga. Es la única función que
+-- comparten los tres schemas; vive en admin y no lee ninguna tabla.
+CREATE FUNCTION admin.set_updated_at() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
     NEW.updated_at := now();
@@ -459,23 +480,23 @@ END $$;
 
 DO $$
 DECLARE
-    t TEXT;
+    t RECORD;
 BEGIN
     FOR t IN
-        SELECT table_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND column_name = 'updated_at'
+        SELECT table_schema, table_name FROM information_schema.columns
+         WHERE table_schema IN ('admin', 'agenda', 'clinical') AND column_name = 'updated_at'
     LOOP
         EXECUTE format(
-            'CREATE TRIGGER trg_set_updated_at BEFORE UPDATE ON %I
-             FOR EACH ROW EXECUTE FUNCTION set_updated_at()', t);
+            'CREATE TRIGGER trg_set_updated_at BEFORE UPDATE ON %I.%I
+             FOR EACH ROW EXECUTE FUNCTION admin.set_updated_at()', t.table_schema, t.table_name);
     END LOOP;
 END $$;
 
 
 -- I4: la duración la decide el servicio. Al insertar se ignora el fin que mande la
 -- aplicación y se calcula; después, la cita no se mueve (para moverla se reprograma).
-CREATE FUNCTION appointments_set_period() RETURNS trigger
-LANGUAGE plpgsql AS $$
+CREATE FUNCTION agenda.appointments_set_period() RETURNS trigger
+LANGUAGE plpgsql SET search_path = admin, agenda, clinical, pg_temp AS $$
 DECLARE
     v_duration INT;
 BEGIN
@@ -523,9 +544,11 @@ CREATE TRIGGER trg_appointments_10_set_period
 -- no se impide: RF6 dice que un bloqueo no cancela citas, las deja como conflicto.
 --
 -- SECURITY DEFINER: FOR SHARE exige permiso UPDATE sobre la tabla, que recepción no
--- tiene; la función corre como su dueño (mc_owner) con un search_path fijo.
-CREATE FUNCTION appointments_check_agenda() RETURNS trigger
-LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+-- tiene; la función corre como su dueño (mc_owner) con un search_path fijo. En una
+-- función SECURITY DEFINER ese search_path fijo es obligatorio: si dependiera del que
+-- llama, alguien podría hacerle leer una tabla falsa con el mismo nombre.
+CREATE FUNCTION agenda.appointments_check_agenda() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = admin, agenda, clinical, pg_temp AS $$
 DECLARE
     v_working tstzmultirange;
 BEGIN
@@ -562,8 +585,8 @@ CREATE TRIGGER trg_appointments_20_check_agenda
 
 -- RF13: toda cita nace reservada; solo se sale de un estado no final, y una cita en
 -- estado final ya no se modifica. RF12: atendida y ausente solo después del inicio.
-CREATE FUNCTION appointments_check_status() RETURNS trigger
-LANGUAGE plpgsql AS $$
+CREATE FUNCTION agenda.appointments_check_status() RETURNS trigger
+LANGUAGE plpgsql SET search_path = admin, agenda, clinical, pg_temp AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
         IF NEW.appointment_status_id <> 1 THEN
@@ -594,8 +617,8 @@ CREATE TRIGGER trg_appointments_30_check_status
 
 -- I3 desde el otro lado: no se borra ni se recorta un bloque de horario que deje
 -- citas reservadas afuera. Para ausencias se usa un bloqueo (RF6), no esto.
-CREATE FUNCTION professional_schedules_guard() RETURNS trigger
-LANGUAGE plpgsql AS $$
+CREATE FUNCTION agenda.professional_schedules_guard() RETURNS trigger
+LANGUAGE plpgsql SET search_path = admin, agenda, clinical, pg_temp AS $$
 DECLARE
     v_remaining tstzrange;  -- lo que queda del bloque después del cambio (NULL si desaparece)
 BEGIN
@@ -624,7 +647,7 @@ CREATE TRIGGER trg_professional_schedules_guard
 
 
 -- I6: la bitácora es append-only aunque alguien conceda UPDATE o DELETE por error.
-CREATE FUNCTION audit_logs_append_only() RETURNS trigger
+CREATE FUNCTION clinical.audit_logs_append_only() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
     RAISE EXCEPTION 'La bitácora de auditoría no admite modificación ni borrado (I6)'

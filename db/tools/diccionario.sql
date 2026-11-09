@@ -26,16 +26,25 @@ CREATE TEMP VIEW dd_areas (area_order, area, tables) AS VALUES
     (7, 'Bitácoras',
         ARRAY['event_types', 'data_objects', 'audit_logs', 'severities', 'system_errors_logs']);
 
+-- Las tablas viven en los schemas de los servicios (db/sql/01-schema.sql). Este script no
+-- fija search_path a propósito: así las FKs y las funciones salen con su schema
+-- (FK → admin.users), lo que deja ver qué relaciones cruzan de un servicio a otro.
+CREATE TEMP VIEW dd_schemas (schema_order, schema_name) AS VALUES
+    (1, 'admin'), (2, 'agenda'), (3, 'clinical');
+
 CREATE TEMP VIEW dd_tables AS
 SELECT c.oid AS relid,
        c.relname::text AS table_name,
+       s.schema_name,
+       s.schema_order,
        coalesce(a.area_order, 99) AS area_order,
        coalesce(a.area, 'Otras tablas') AS area,
        coalesce(array_position(a.tables, c.relname::text), 0) AS table_order
   FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN dd_schemas s ON s.schema_name = n.nspname
   LEFT JOIN dd_areas a ON c.relname::text = ANY (a.tables)
- WHERE c.relnamespace = 'public'::regnamespace
-   AND c.relkind = 'r';
+ WHERE c.relkind = 'r';
 
 
 -- Encabezado ------------------------------------------------------------------
@@ -51,6 +60,9 @@ SELECT $md$# Diccionario de datos de MediCitas
 
 - **Nombres.** Están en snake_case, tal como existen en la base. El modelo del README usa camelCase
   (`clinicId` → `clinic_id`).
+- **Schemas.** Cada tabla vive en el schema del servicio que la escribe: `admin`, `agenda` o `clinical`
+  (`docs/diseno-servicios.md`). Separan servicios, no clínicas: el tenant sigue siendo `clinic_id`. Las FKs y
+  las funciones se muestran con su schema, así se ve qué relaciones cruzan de un servicio a otro.
 - **Columnas de cada tabla.**
   - *Nulo*: `sí` si la columna admite NULL.
   - *Por omisión*: valor que pone el motor si el `INSERT` no lo trae. `identidad` significa
@@ -91,12 +103,22 @@ SELECT E'## Tablas por área\n\n| Área | Tablas |\n|---|---|\n'
           FROM dd_tables
          GROUP BY area_order, area) a;
 
+SELECT E'## Tablas por schema\n\n| Schema | Descripción | Tablas |\n|---|---|---|\n'
+       || string_agg(format('| `%s` | %s | %s |', schema_name,
+                            coalesce(obj_description(to_regnamespace(schema_name), 'pg_namespace'), ''), tables),
+                     E'\n' ORDER BY schema_order)
+       || E'\n'
+  FROM (SELECT schema_order, schema_name,
+               string_agg(format('[%1$s](#%1$s)', table_name), ', ' ORDER BY area_order, table_order) AS tables
+          FROM dd_tables
+         GROUP BY schema_order, schema_name) s;
+
 
 -- Una sección por área y una subsección por tabla -------------------------------
 SELECT format(E'## %s\n\n%s', area, string_agg(md, E'\n' ORDER BY table_order))
   FROM (
     SELECT t.area_order, t.area, t.table_order,
-           format(E'### %s\n\n%s\n\n', t.table_name,
+           format(E'### %s\n\n**Schema:** `%s`. %s\n\n', t.table_name, t.schema_name,
                   coalesce(obj_description(t.relid, 'pg_class'), '_Sin descripción._'))
            || E'| Columna | Tipo | Nulo | Por omisión | Llave | Descripción |\n'
            || E'|---|---|---|---|---|---|\n'
@@ -213,39 +235,39 @@ $md$;
 SELECT E'### Valores de roles\n\n| role_id | role_name | Descripción |\n|---|---|---|\n'
        || string_agg(format('| %s | `%s` | %s |', role_id, role_name, description), E'\n' ORDER BY role_id)
        || E'\n'
-  FROM roles;
+  FROM admin.roles;
 
 SELECT E'### Valores de appointment_statuses\n\n| appointment_status_id | status_name | is_final |\n|---|---|---|\n'
        || string_agg(format('| %s | `%s` | %s |', appointment_status_id, status_name,
                             CASE WHEN is_final THEN 'sí' ELSE 'no' END),
                      E'\n' ORDER BY appointment_status_id)
        || E'\n'
-  FROM appointment_statuses;
+  FROM agenda.appointment_statuses;
 
 SELECT E'### Valores de genders\n\n| gender_id | gender_name |\n|---|---|\n'
        || string_agg(format('| %s | `%s` |', gender_id, gender_name), E'\n' ORDER BY gender_id)
        || E'\n'
-  FROM genders;
+  FROM clinical.genders;
 
 SELECT E'### Valores de contact_types\n\n| contact_type_id | contact_type_name |\n|---|---|\n'
        || string_agg(format('| %s | `%s` |', contact_type_id, contact_type_name), E'\n' ORDER BY contact_type_id)
        || E'\n'
-  FROM contact_types;
+  FROM admin.contact_types;
 
 SELECT E'### Valores de event_types\n\n| event_type_id | name | Descripción |\n|---|---|---|\n'
        || string_agg(format('| %s | `%s` | %s |', event_type_id, name, description), E'\n' ORDER BY event_type_id)
        || E'\n'
-  FROM event_types;
+  FROM clinical.event_types;
 
 SELECT E'### Valores de data_objects\n\n| data_object_id | name | Descripción |\n|---|---|---|\n'
        || string_agg(format('| %s | `%s` | %s |', data_object_id, name, description), E'\n' ORDER BY data_object_id)
        || E'\n'
-  FROM data_objects;
+  FROM clinical.data_objects;
 
 SELECT E'### Valores de severities\n\n| severity_id | name | Descripción |\n|---|---|---|\n'
        || string_agg(format('| %s | `%s` | %s |', severity_id, name, description), E'\n' ORDER BY severity_id)
        || E'\n'
-  FROM severities;
+  FROM admin.severities;
 
 -- Matriz de permisos: una columna por rol (los role_id son fijos).
 SELECT E'### Matriz de permisos (permissions y permissions_per_roles, RF17)\n\n'
@@ -258,7 +280,7 @@ SELECT E'### Matriz de permisos (permissions y permissions_per_roles, RF17)\n\n'
               CASE WHEN 3 = ANY (r.role_ids) THEN '✓' ELSE '' END,
               CASE WHEN 4 = ANY (r.role_ids) THEN '✓' ELSE '' END),
             E'\n' ORDER BY p.permission_id)
-  FROM permissions p
+  FROM admin.permissions p
  CROSS JOIN LATERAL (SELECT array_agg(pr.role_id) AS role_ids
-                       FROM permissions_per_roles pr
+                       FROM admin.permissions_per_roles pr
                       WHERE pr.permission_id = p.permission_id AND pr.is_active) r;
