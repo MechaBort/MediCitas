@@ -96,6 +96,34 @@ dependencias.
 - **Lo que se sacrifica.** Las imágenes de Docker se construyen desde la raíz del repositorio, no desde la
   carpeta del servicio. Además, un cambio en `common` obliga a reconstruir los tres servicios.
 
+**Decisión de la etapa 4: cómo se traducen los errores de la base.**
+- **Problema.** Las reglas de negocio las garantiza la base: los triggers abortan con códigos propios
+  (`MC001`–`MC006`) y las restricciones `EXCLUDE` con `23P01`. `toResponse` no conocía los códigos propios y los
+  respondía como 500. Además, las tres `EXCLUDE` respondían el mismo 409, sin decir con qué fue el choque.
+- **Elegido.** Dos tablas en `packages/common/src/errors.js`:
+  - `PG_ERRORS`, por el código de error (`err.code`), ahora con los seis códigos propios;
+  - `EXCLUSION_ERRORS`, por el nombre de la restricción que falló (`err.constraint`): el choque con el profesional
+    (I1, el "espacio ya tomado" de la reserva), con el paciente (I2) y entre bloques de horario. Una restricción
+    que no esté en la tabla responde el `23P01` genérico.
+- **Criterio del código HTTP.**
+  - 4xx cuando la regla rechaza algo que un cliente sí puede pedir: `MC001` → 400 (la "solicitud inválida" de la
+    reserva: fuera del horario o dentro de un bloqueo); `MC002`, `MC003`, `MC006` y los `23P01` → 409 (la
+    petición está bien formada, pero choca con el estado actual de los datos).
+  - 500 para `MC004` y `MC005`. Desde la API son inalcanzables: los `GRANT` los frenan antes con `42501` (403).
+    Si llegaran, sería una configuración rota del servidor.
+- **Por qué en `common`.** Los códigos vienen de tablas de `agenda` y `clinical`; así, los servicios de la etapa 5
+  ya los traducen sin repetir nada.
+- **Alternativas descartadas.**
+  - **Traducir en cada ruta.** Cada ruta repetiría la tabla, y las copias se desalinean.
+  - **Responder el texto del trigger (`err.message`).** Está escrito para desarrolladores e incluye cosas como
+    "(I3)". Queda disponible por entrada: con `null` como mensaje se usa ese texto.
+- **Bloques de horario solapados.** La ruta de RF5 revisará, antes de insertar, que el bloque no se cruce con otro,
+  para dar un buen mensaje en el caso normal. La restricción `ex_schedules_overlap` sigue siendo la garantía:
+  si dos ediciones simultáneas pasan esa revisión, la segunda recibe 409.
+- **Lo que se sacrifica.** La API depende de los nombres de las restricciones: si se renombra una en
+  `01-schema.sql`, hay que cambiar la tabla. Si se olvida, la respuesta cae en el 409 genérico: pierde detalle, pero
+  no se rompe. Y `MC001` cubre dos situaciones con un solo mensaje.
+
 ---
 
 ## 3. Gateway

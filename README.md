@@ -746,6 +746,21 @@ ejemplo, mandar `clinicId`: la clínica siempre sale del token).
 Códigos comunes a todas las rutas protegidas: 401 sin token válido, 403 sin el permiso, 400 si el body o los
 parámetros no son válidos o el JSON está mal formado.
 
+### Errores de las reglas de negocio
+Varias reglas las garantiza la base de datos. Cuando una operación las viola, la API responde así
+(`packages/common/src/errors.js`):
+
+| Situación | Error de la base | Código |
+|---|---|---|
+| El profesional ya tiene una cita reservada en ese horario: espacio ya tomado (I1) | `23P01` en `ex_appointments_professional` | 409 |
+| El paciente ya tiene una cita reservada en ese horario, con cualquier profesional (I2) | `23P01` en `ex_appointments_patient` | 409 |
+| Dos bloques de horario del mismo profesional se cruzan (RF5) | `23P01` en `ex_schedules_overlap` | 409 |
+| La cita cae fuera del horario del profesional o dentro de un bloqueo (I3) | `MC001` | 400 |
+| La cita ya está en un estado final y no admite cambios (RF13) | `MC002` | 409 |
+| Se registra el desenlace antes de la hora de inicio (RF12) | `MC003` | 409 |
+| Se borra o recorta un bloque de horario que tiene citas reservadas (I3) | `MC006` | 409 |
+| Mover una cita o modificar la bitácora (I4, I6) | `42501` | 403: los permisos de la base lo frenan antes del trigger (`MC004`, `MC005`), que solo respondería 500 si los permisos estuvieran mal configurados |
+
 En Windows con Git Bash, `curl -d '...'` no envía en UTF-8 los caracteres como tildes o ñ. Para probar con
 esos datos, guarde el body en un archivo y use `curl --data-binary @body.json`.
 

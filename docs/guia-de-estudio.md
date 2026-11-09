@@ -216,7 +216,7 @@ El diseño completo, con el porqué de cada decisión, está en `docs/diseno-ser
 | 1 | El código de `app/` pasó a **npm workspaces**: `packages/common` (seguridad, base y errores) y `services/admin` (el resto) | Hecha |
 | 2 | Las tablas pasaron a los schemas `admin`, `agenda` y `clinical` (sección 4.2) | Hecha |
 | 3 | Un usuario de base por servicio, en lugar de `mc_app` (sección 3.5) | Hecha |
-| 4 | Traducir los errores `MC001`–`MC006` de los triggers a respuestas HTTP | Pendiente |
+| 4 | Traducir los errores `MC001`–`MC006` de los triggers a respuestas HTTP, y distinguir los `23P01` por la restricción que falló (sección 8.1) | Hecha |
 | 5 | Servicios `agenda` y `clinical`, y un gateway Nginx que reparte las rutas | Pendiente |
 | 6 | Un solo comando de pruebas, `npm test` | Pendiente |
 
@@ -991,7 +991,7 @@ Las dos leyeron "libre" antes de que la otra escribiera. Con la restricción `EX
 | 1 | `INSERT` 9:00 → su fila entra al índice, todavía sin confirmar | |
 | 2 | | `INSERT` 9:00 → encuentra en el índice la fila de A, que choca → **espera** a que A termine |
 | 3 | `COMMIT` | |
-| 4 | | **ERROR `23P01`** (`exclusion_violation`) → la API responderá 409 "espacio ya tomado" |
+| 4 | | **ERROR `23P01`** (`exclusion_violation`) en `ex_appointments_professional` → la API responde 409, "espacio ya tomado" |
 
 Si en el momento 3 A hiciera `ROLLBACK`, B continuaría y ganaría. **Siempre gana exactamente una.**
 
@@ -1121,16 +1121,20 @@ Un **trigger** es una función que el motor ejecuta automáticamente cuando ocur
 - **Orden:** si hay varios triggers para el mismo evento, Postgres los ejecuta en **orden alfabético de nombre**.
   Por eso los de citas se llaman `…_10_…`, `…_20_…`, `…_30_…`.
 
-**Códigos de error propios** (los define el esquema para que la API los traduzca a respuestas HTTP):
+**Códigos de error propios** (los define el esquema y `toResponse` los traduce a respuestas HTTP; sección 8.1):
 
-| Código | Significado | Regla |
-|---|---|---|
-| `MC001` | La cita cae fuera del horario o dentro de un bloqueo | I3 |
-| `MC002` | Transición de estado no permitida | RF13 |
-| `MC003` | Desenlace registrado antes de la hora de inicio | RF12 |
-| `MC004` | Intento de mover una cita o cambiarle el servicio | I4 |
-| `MC005` | Intento de modificar o borrar la bitácora | I6 |
-| `MC006` | El bloque de horario tiene citas reservadas | I3 |
+| Código | Significado | Regla | Respuesta de la API |
+|---|---|---|---|
+| `MC001` | La cita cae fuera del horario o dentro de un bloqueo | I3 | 400 |
+| `MC002` | Transición de estado no permitida | RF13 | 409 |
+| `MC003` | Desenlace registrado antes de la hora de inicio | RF12 | 409 |
+| `MC004` | Intento de mover una cita o cambiarle el servicio | I4 | 500 |
+| `MC005` | Intento de modificar o borrar la bitácora | I6 | 500 |
+| `MC006` | El bloque de horario tiene citas reservadas | I3 | 409 |
+
+`MC004` y `MC005` responden 500 porque desde la API no se pueden alcanzar: los perfiles no tienen permiso para
+cambiar esas columnas ni la bitácora, así que la base los frena antes con `42501` (403). Si alguno llegara, sería
+una configuración rota del servidor, no un error de quien hizo la petición.
 
 #### `set_updated_at` 🟡 (`db/sql/01-schema.sql:474`)
 
@@ -1621,9 +1625,15 @@ services/admin/src/    app.js, server.js, accounts.js, keycloak.js, routes/clini
 - **`errors.js`.**
   - `HttpError` es un error con código HTTP.
   - `parse` valida con zod y responde 400 con la lista de campos inválidos, en español.
-  - `toResponse` traduce los errores de PostgreSQL a HTTP: `23505` y `23503` → 409, `23514` → 400, `42501` → 403…
-  - **Pendiente (etapa 4):** traducir `MC001`–`MC006` (hoy responden 500) y distinguir si el `23P01` es del
-    profesional o del paciente.
+  - `toResponse` traduce los errores de PostgreSQL a HTTP con dos tablas (desde la etapa 4):
+    - `PG_ERRORS`, por el código de error (`err.code`): `23505` y `23503` → 409, `23514` → 400, `42501` → 403, y
+      los códigos propios `MC001`–`MC006` (sección 4.7).
+    - `EXCLUSION_ERRORS`, por el nombre de la restricción que falló (`err.constraint`). Las tres `EXCLUDE` fallan
+      con el mismo `23P01`, pero el nombre dice si el choque fue con el profesional (I1), con el paciente (I2) o
+      entre bloques de horario. Una restricción que no esté en la tabla responde el `23P01` genérico.
+  - **Criterio del código:** 4xx cuando la regla rechaza algo que un cliente sí puede pedir (el cliente debe
+    cambiar su petición), y 500 solo para lo que desde la API es inalcanzable (`MC004`, `MC005`). Un 5xx le dice
+    al cliente que reintente, y además el servicio lo registra en el log como falla.
 
 ### 8.2 El servicio `admin` 🟡
 
@@ -1797,14 +1807,16 @@ rompería I7: cancelar no liberaría el espacio.
 <details><summary><b>4.3</b> ¿Qué pasa, paso a paso, cuando dos recepcionistas reservan el mismo espacio a la vez?</summary>
 
 La primera inserta y su fila entra al índice del `EXCLUDE`, sin confirmar. La segunda, al insertar, encuentra esa
-fila en conflicto y espera. Si la primera confirma, la segunda falla con `23P01` (la API responderá 409). Si la
+fila en conflicto y espera. Si la primera confirma, la segunda falla con `23P01` en `ex_appointments_professional`
+y la API responde 409, "espacio ya tomado". Si la
 primera hace rollback, la segunda continúa y gana. Siempre gana exactamente una, con `READ COMMITTED`.
 </details>
 
 <details><summary><b>4.4</b> Un paciente tiene cita a las 9:00 con Laura y le reservan otra a las 9:00 con Andrés.</summary>
 
 Falla con `23P01` en `ex_appointments_patient` (I2): el paciente no puede tener dos citas reservadas solapadas,
-aunque sean con profesionales distintos.
+aunque sean con profesionales distintos. La API responde 409 con un mensaje distinto al del choque de profesional,
+porque `toResponse` mira el nombre de la restricción.
 </details>
 
 <details><summary><b>4.5</b> ¿Por qué (clinic_id, patient_id) y no solo patient_id en la FK?</summary>
