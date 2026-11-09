@@ -594,7 +594,7 @@ espacio queda libre para la siguiente consulta.
 | Rol de BD | Tipo | Uso |
 |---|---|---|
 | `mc_owner` | LOGIN | Dueño del esquema. Solo ejecuta `schema.sql` y el seed. La aplicación nunca lo usa: el dueño puede desactivar triggers y el superusuario ignora los permisos, lo que anularía la protección de la bitácora. |
-| `mc_app` | LOGIN, sin privilegios propios | Usuario con el que se conecta el backend. Es miembro de los cuatro roles siguientes y en cada transacción hace `SET LOCAL ROLE` al rol que trae el token. |
+| `mc_admin_svc`, `mc_agenda_svc`, `mc_clinical_svc` | LOGIN, sin privilegios propios | Un usuario de conexión por servicio, con su `CONNECTION LIMIT` (20, 40 y 20). En cada transacción hace `SET LOCAL ROLE` al rol que trae el token. `mc_admin_svc` puede usar los cuatro roles siguientes; `mc_agenda_svc` y `mc_clinical_svc`, todos menos `mc_platform`. Ver `docs/diseno-servicios.md`, sección 4. |
 | `mc_platform`, `mc_clinic_admin`, `mc_reception`, `mc_professional` | NOLOGIN | Llevan los permisos de la tabla siguiente. |
 
 Permisos (S = SELECT, I = INSERT, U = UPDATE, D = DELETE; — = ninguno):

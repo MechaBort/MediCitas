@@ -3,8 +3,20 @@
 Material de estudio del grupo. Explica **qué** se construyó, **cómo** funciona y **por qué** se decidió así, con
 experimentos para comprobar cada cosa por cuenta propia.
 
-Refleja el estado del proyecto al 31 de octubre de 2026: la infraestructura, la base de datos, Keycloak y Redis
-están listos; la API REST todavía no (solo existe `/health`). Lo que aún no existe se marca como **pendiente**.
+Refleja el estado del proyecto al 8 de noviembre de 2026:
+- la infraestructura, la base de datos, Keycloak y Redis están listos;
+- la API valida tokens (RF17) y tiene las rutas de clínicas y usuarios (RF1, RF2);
+- el repositorio ya está organizado en servicios, y la base, en un schema por servicio.
+
+Lo que aún no existe se marca como **pendiente**.
+
+**Novedades de la separación en servicios:**
+- el servicio `app` ahora se llama `admin`;
+- las tablas están en los schemas `admin`, `agenda` y `clinical`;
+- la API se conecta con un usuario por servicio en lugar de `mc_app`.
+
+Están en la [sección 2.4](#24-de-una-aplicación-a-servicios-), la [sección 3.5](#35-un-usuario-por-servicio-)
+y la [sección 4.2](#42-las-tablas-por-área-y-por-schema-). El diseño completo está en `docs/diseno-servicios.md`.
 
 ## Cómo usar esta guía
 
@@ -53,8 +65,14 @@ Postgres confía en las conexiones locales; desde fuera (puerto 5432) sí la pid
 
 | Comando | Entra como | Para qué |
 |---|---|---|
-| `docker compose exec db psql -U mc_app -d medicitas` | el usuario de la API | experimentos con permisos (`SET LOCAL ROLE …`) |
+| `docker compose exec db psql -U mc_admin_svc -d medicitas` | el usuario del servicio `admin` de la API | experimentos con permisos (`SET LOCAL ROLE …`) |
 | `docker compose exec db psql -U mc_owner -d medicitas` | el dueño del esquema | explorar: ve todo |
+
+**Los schemas y `psql`.** Las tablas están en los schemas `admin`, `agenda` y `clinical`.
+- **Como `mc_admin_svc` o `mc_owner`:** las encuentran por nombre simple (`appointments`), porque esos usuarios
+  tienen configurado su `search_path`, la lista de schemas donde buscar.
+- **Como `postgres`:** hay que escribir el schema (`agenda.appointments`) o ejecutar primero
+  `SET search_path = admin, agenda, clinical, public;`.
 
 Comandos de `psql` que van a usar:
 
@@ -63,7 +81,8 @@ Comandos de `psql` que van a usar:
 | `\d appointments` | columnas, índices, restricciones y triggers de una tabla |
 | `\d+ appointments` | lo mismo, con la descripción de cada columna |
 | `\du` | roles de la base |
-| `\sf appointments_check_agenda` | código fuente de una función |
+| `\sf agenda.appointments_check_agenda` | código fuente de una función (las funciones van con su schema) |
+| `\dn+` | los schemas, con su dueño, sus permisos y su descripción |
 | `\x` | alterna la vista expandida (útil para filas anchas) |
 | `\q` | salir |
 
@@ -109,13 +128,13 @@ La API también validará, pero para dar **mensajes claros** (un 409 con "espaci
 
 | Invariante | Qué dice | Lo garantiza | Dónde | Experimento |
 |---|---|---|---|---|
-| I1 | Un profesional nunca tiene dos citas vigentes solapadas | `EXCLUDE` `ex_appointments_professional` | `db/sql/01-schema.sql:371` | E12, E13 |
-| I2 | Un paciente nunca tiene dos citas vigentes solapadas | `EXCLUDE` `ex_appointments_patient` | `db/sql/01-schema.sql:373` | pregunta 11.4 |
-| I3 | Toda cita vigente cae dentro del horario y fuera de los bloqueos | triggers `trg_appointments_20_check_agenda` y `trg_professional_schedules_guard` | `db/sql/01-schema.sql:527` y `:597` | E16, E17, E21 |
-| I4 | La duración la decide el servicio | trigger `trg_appointments_10_set_period` y permiso de columna | `db/sql/01-schema.sql:477`, `db/sql/02-grants.sql:56` | E8, E14, E18 |
-| I5 | Ningún dato de una clínica es accesible desde otra | FKs compuestas `(clinic_id, …)` y, en la API, el `clinic_id` sale del token | `db/sql/01-schema.sql`, API **pendiente** | E10, E10b, E10c |
-| I6 | La bitácora no se modifica ni se borra | sin permisos `UPDATE`/`DELETE` y triggers | `db/sql/02-grants.sql:62`, `db/sql/01-schema.sql:627` | E22 |
-| I7 | Cancelar o reprogramar libera el espacio de inmediato | el `EXCLUDE` solo cuenta las citas `reservada` | `db/sql/01-schema.sql:371` | E14 |
+| I1 | Un profesional nunca tiene dos citas vigentes solapadas | `EXCLUDE` `ex_appointments_professional` | `db/sql/01-schema.sql:388` | E12, E13 |
+| I2 | Un paciente nunca tiene dos citas vigentes solapadas | `EXCLUDE` `ex_appointments_patient` | `db/sql/01-schema.sql:390` | pregunta 11.4 |
+| I3 | Toda cita vigente cae dentro del horario y fuera de los bloqueos | triggers `trg_appointments_20_check_agenda` y `trg_professional_schedules_guard` | `db/sql/01-schema.sql:550` y `:620` | E16, E17, E21 |
+| I4 | La duración la decide el servicio | trigger `trg_appointments_10_set_period` y permiso de columna | `db/sql/01-schema.sql:498`, `db/sql/02-grants.sql:66` | E8, E14, E18 |
+| I5 | Ningún dato de una clínica es accesible desde otra | FKs compuestas `(clinic_id, …)` y, en la API, el `clinic_id` sale del token (`identify` en `packages/common/src/auth.js`) | `db/sql/01-schema.sql`, `packages/common/src/auth.js` | E10, E10b, E10c |
+| I6 | La bitácora no se modifica ni se borra | sin permisos `UPDATE`/`DELETE` y triggers | `db/sql/02-grants.sql:72`, `db/sql/01-schema.sql:650` | E22 |
+| I7 | Cancelar o reprogramar libera el espacio de inmediato | el `EXCLUDE` solo cuenta las citas `reservada` | `db/sql/01-schema.sql:388` | E14 |
 | I8 | La caché nunca contradice a la base | Redis con invalidación | **pendiente** (paso 6) | — |
 
 ### Preguntas de control
@@ -133,7 +152,7 @@ La API también validará, pero para dar **mensajes claros** (un 409 con "espaci
 |---|---|---|---|
 | `db` | `postgres:18-alpine` | Guarda todo, en dos bases separadas: `medicitas` (la app) y `keycloak` (estado de Keycloak) | `127.0.0.1:5432` |
 | `keycloak` | `quay.io/keycloak/keycloak:26.7` | Proveedor de identidad: guarda contraseñas, hace el login y emite los tokens | `127.0.0.1:8080` |
-| `app` | se construye desde `./app` (`node:24-alpine`) | La API REST | `127.0.0.1:3000` |
+| `admin` | se construye con `services/admin/Dockerfile` (`node:24-alpine`) | La API REST: por ahora el único servicio, con clínicas y usuarios (RF1, RF2). Hasta la etapa 1 se llamaba `app` | `127.0.0.1:3000` |
 | `redis` | `redis:8.2-alpine` | Caché de la consulta de disponibilidad | ninguno |
 
 El diagrama está en `docs/diagramas.md`, sección 1.
@@ -142,14 +161,16 @@ El diagrama está en `docs/diagramas.md`, sección 1.
 
 1. El cliente pide un **token** a Keycloak con usuario y contraseña, y recibe un JWT firmado (Parte 6).
 2. El cliente llama a la API con la cabecera `Authorization: Bearer <token>`.
-3. La API verifica la firma del token con las **llaves públicas** de Keycloak (JWKS). **Pendiente.**
-4. La API busca el `sub` del token en la tabla `users` y obtiene la clínica y el rol. Abre una transacción, hace
-   `SET LOCAL ROLE` al rol de base de datos que corresponde y ejecuta el SQL filtrando por esa clínica.
-   **Pendiente.**
+3. La API verifica la firma del token con las **llaves públicas** de Keycloak (JWKS): `authenticate`, en
+   `packages/common/src/auth.js`.
+4. La API busca el `sub` del token en la tabla `users` y obtiene la clínica y el rol (`identify`). Si el servicio
+   no atiende ese rol, responde 403 ahí mismo (sección 3.5). Después abre una transacción, hace `SET LOCAL ROLE` al
+   rol de base de datos que corresponde y ejecuta el SQL filtrando por esa clínica (`withTransaction`, en
+   `packages/common/src/db.js`).
 5. Para la disponibilidad (RF7) consulta primero Redis; si no está, calcula en Postgres y guarda el resultado.
    **Pendiente.**
 
-Los pasos 1 y 2 ya funcionan; los pasos 3 a 5 son lo que se programa a continuación.
+Los pasos 1 a 4 ya funcionan; el 5 llega con la ruta de disponibilidad.
 
 ### 2.3 Decisiones del `docker-compose.yml` 🟡
 
@@ -171,7 +192,7 @@ Los pasos 1 y 2 ya funcionan; los pasos 3 a 5 son lo que se programa a continuac
     el servicio aparecía "sano" con la base incompleta.
   - `keycloak`: su endpoint `/health/ready` responde `200 OK`.
   - `redis`: responde `PONG`.
-  - `app`: `/health` responde.
+  - `admin`: `/health` responde.
 - **La inicialización corre una sola vez.** Postgres ejecuta `db/init/` solo cuando el volumen de datos está vacío,
   y Keycloak importa el realm solo si no existe. **Después de cambiar algo en `db/sql/` o en `keycloak/`, hay que
   recrear con `docker compose down -v`.**
@@ -180,6 +201,50 @@ Los pasos 1 y 2 ya funcionan; los pasos 3 a 5 son lo que se programa a continuac
   `KC_HOSTNAME` hace que el `iss` sea siempre `http://localhost:8080/realms/medicitas`; la app descarga las llaves
   por la red interna (`KEYCLOAK_JWKS_URL`).
 - **`start-dev`.** Keycloak corre en modo desarrollo (HTTP, sin TLS). En producción se usaría `start` con HTTPS.
+
+### 2.4 De una aplicación a servicios 🔴
+
+El profesor pidió un sistema dividido en servicios, que escale y que también corra en Kubernetes. El grupo comparó
+tres arquitecturas (`docs/comparacion-arquitecturas.md`) y eligió una **basada en servicios**:
+- tres servicios que se despliegan y escalan por separado: `admin`, `agenda` y `clinical`;
+- una sola base PostgreSQL dividida en un schema por servicio.
+
+El diseño completo, con el porqué de cada decisión, está en `docs/diseno-servicios.md`. Se construye por etapas:
+
+| Etapa | Qué hizo | Estado |
+|---|---|---|
+| 1 | El código de `app/` pasó a **npm workspaces**: `packages/common` (seguridad, base y errores) y `services/admin` (el resto) | Hecha |
+| 2 | Las tablas pasaron a los schemas `admin`, `agenda` y `clinical` (sección 4.2) | Hecha |
+| 3 | Un usuario de base por servicio, en lugar de `mc_app` (sección 3.5) | Hecha |
+| 4 | Traducir los errores `MC001`–`MC006` de los triggers a respuestas HTTP | Pendiente |
+| 5 | Servicios `agenda` y `clinical`, y un gateway Nginx que reparte las rutas | Pendiente |
+| 6 | Un solo comando de pruebas, `npm test` | Pendiente |
+
+**Qué es un workspace.** Un *workspace* de npm es un proyecto dentro de otro, en el mismo repositorio. La raíz
+declara los suyos en `package.json` (`"workspaces": ["packages/*", "services/*"]`), y todos comparten un solo
+`package-lock.json`. Así, `services/admin` importa el código común como si fuera un paquete instalado:
+
+```js
+import { withTransaction } from '@medicitas/common/db';
+```
+
+- **Por qué un paquete común.** Los tres servicios necesitan exactamente el mismo código de seguridad: validar el
+  token, abrir transacciones con `SET LOCAL ROLE` y traducir errores. Con copias en cada servicio, un arreglo de
+  seguridad podría aplicarse en una y olvidarse en otra.
+- **Regla:** `packages/common` nunca tiene lógica de negocio. Si una regla de citas apareciera ahí, los servicios
+  quedarían acoplados por el código.
+- **Una sola copia de cada dependencia.** `errors.js` configura los mensajes de zod en español con
+  `z.config(...)`, y esa configuración solo afecta a la copia de zod que la ejecuta. Si un servicio tuviera su
+  propia copia, sus validaciones responderían en inglés sin que nada fallara. Por eso las dependencias se agregan
+  desde la raíz: `npm install <paquete> -w services/<servicio>`.
+- **La imagen se construye desde la raíz del repositorio**, no desde la carpeta del servicio, porque necesita el
+  `package-lock.json` de la raíz y `packages/common` (ver `services/admin/Dockerfile`).
+
+**E3b. El código común es un paquete.** Con la pila levantada:
+
+```bash
+docker compose exec admin ls -l /app/node_modules/@medicitas   # admin -> ../../services/admin, common -> ../../packages/common
+```
 
 ### Experimentos
 
@@ -204,6 +269,8 @@ docker compose exec redis redis-cli ping                                        
 
 2.1. ¿Por qué la app no arranca hasta que Keycloak está sano?
 2.2. Cambiaron una línea de `db/sql/01-schema.sql` y reiniciaron con `docker compose restart`. ¿Se aplicó el cambio?
+2.3. ¿Por qué `packages/common` no puede tener lógica de negocio, y por qué todos los servicios deben usar la misma
+copia de zod?
 
 ---
 
@@ -215,8 +282,9 @@ Lo ejecuta la imagen de Postgres en el primer arranque, en tres pasos:
 
 1. **Como superusuario** (solo él puede crear roles y bases): crea los roles y las bases `medicitas` y `keycloak`.
    Quita el acceso por defecto (`REVOKE ALL … FROM PUBLIC`): solo el dueño de cada base y quien reciba
-   `CONNECT` explícitamente pueden conectarse. A `medicitas` solo se le concede a `mc_app`, y Keycloak no puede
-   entrar a ella.
+   `CONNECT` explícitamente pueden conectarse. A `medicitas` solo se le concede a los tres usuarios de servicio
+   (`mc_admin_svc`, `mc_agenda_svc` y `mc_clinical_svc`), y Keycloak no puede entrar a ella. También fija el
+   `search_path` de esos usuarios (sección 4.2).
 2. **Como `mc_owner`**: ejecuta en orden los scripts de `db/sql/` (`01-schema`, `02-grants`, `03-catalogs`,
    `04-seed`, `05-comments`). Como los ejecuta `mc_owner`, él queda como dueño de todas las tablas y funciones.
 3. Crea la marca `.medicitas-init-ok` que busca el healthcheck.
@@ -229,7 +297,7 @@ Las contraseñas llegan como variables de entorno y entran al SQL como variables
 | Rol | Tipo | Para qué |
 |---|---|---|
 | `mc_owner` | puede iniciar sesión | Dueño del esquema. Solo ejecuta los scripts de `db/sql/`. **La app nunca lo usa.** |
-| `mc_app` | puede iniciar sesión, **sin permisos propios** | El usuario con el que se conecta la API |
+| `mc_admin_svc`, `mc_agenda_svc`, `mc_clinical_svc` | pueden iniciar sesión, **sin permisos propios** | Los usuarios con los que se conecta la API, uno por servicio (sección 3.5). Antes de la etapa 3 había uno solo, `mc_app` |
 | `mc_platform`, `mc_clinic_admin`, `mc_reception`, `mc_professional` | no inician sesión | Cada uno tiene los permisos de un rol de la aplicación |
 
 **¿Por qué la app no se conecta como el dueño?** El dueño de una tabla puede hacer cualquier cosa con ella:
@@ -237,21 +305,23 @@ borrarla, cambiarla o desactivar sus triggers (`ALTER TABLE … DISABLE TRIGGER`
 dueño, un error de programación o una inyección SQL podrían, por ejemplo, desactivar la protección de la bitácora.
 Es el principio de **menor privilegio**: cada quien tiene solo los permisos que necesita.
 
-**Cómo funciona `mc_app`:**
+**Cómo funciona un usuario de servicio** (el ejemplo es `mc_admin_svc`; los otros dos funcionan igual, con menos
+perfiles):
 
 ```text
-mc_app  (inicia sesión, NOINHERIT: no hereda ningún permiso)
+mc_admin_svc  (inicia sesión, NOINHERIT: no hereda ningún permiso)
    │
    │  SET LOCAL ROLE …   (una vez por transacción, según el rol que trae el token)
    │
-   ├──► mc_platform
+   ├──► mc_platform        (solo mc_admin_svc)
    ├──► mc_clinic_admin
    ├──► mc_reception
    └──► mc_professional
 ```
 
-- `mc_app` es miembro de los cuatro roles, pero con `NOINHERIT` y `WITH INHERIT FALSE, SET TRUE`. Eso significa:
-  **puede convertirse** en cualquiera de ellos (`SET ROLE`), pero **no recibe sus permisos automáticamente**.
+- El usuario de servicio es miembro de sus perfiles, pero con `NOINHERIT` y `WITH INHERIT FALSE, SET TRUE`. Eso
+  significa que **puede convertirse** en cualquiera de ellos (`SET ROLE`), pero **no recibe sus permisos
+  automáticamente**.
 - Consecuencia: si el código olvida el `SET ROLE`, la consulta falla con "permission denied" en lugar de ejecutarse
   con todos los permisos. Ante un error, el sistema **falla cerrado**.
 - **`SET LOCAL` y no `SET`.** La API usa un *pool* de conexiones: la misma conexión atiende una petición tras otra.
@@ -266,7 +336,7 @@ Cada rol de base de datos recibe solo lo que su matriz permite. La tabla complet
 - **Recepción no puede leer notas clínicas.** Solo `mc_professional` tiene permisos sobre `clinical_notes`.
 - **Nadie puede cambiar el horario ni el servicio de una cita.** El `UPDATE` sobre `appointments` se concede solo
   sobre seis columnas (estado, datos de cancelación, `updated_at`, `updated_by`) en
-  `db/sql/02-grants.sql:56`. `period` y `service_id` no están en la lista (I4).
+  `db/sql/02-grants.sql:66`. `period` y `service_id` no están en la lista (I4).
 - **Nadie tiene `UPDATE`, `DELETE` ni `TRUNCATE` sobre `audit_logs`** (I6).
 - **`REVOKE EXECUTE … FROM PUBLIC`** sobre nuestras funciones: en Postgres, toda función nueva la puede ejecutar
   cualquiera. Las nuestras solo las usan los triggers, que no necesitan ese permiso, así que se quita.
@@ -290,9 +360,47 @@ Hay dos sistemas de permisos y es fácil confundirlos:
 **Pendiente de decidir por el grupo:** la matriz del enunciado no menciona RF20 (agenda del día) ni RF21 (conteo
 por estado). Se propuso `agenda.read` para admin, recepción y profesional, y `reports.read` solo para el admin.
 
+### 3.5 Un usuario por servicio 🔴
+
+Hasta la etapa 3, toda la API entraba a la base con un solo usuario, `mc_app`. Ahora cada servicio tiene el suyo:
+
+| Usuario | Perfiles que puede usar | `CONNECTION LIMIT` |
+|---|---|---|
+| `mc_admin_svc` | los cuatro | 20 |
+| `mc_agenda_svc` | clínica, recepción y profesional | 40 |
+| `mc_clinical_svc` | clínica, recepción y profesional | 20 |
+
+**Gafete y uniforme.** Conviene separar dos ideas:
+- el **usuario** es el gafete: dice por qué puerta entra cada servicio;
+- el **perfil** (`mc_reception`…) es el uniforme: dice qué puede hacer adentro.
+
+Los cuatro perfiles y sus permisos no cambiaron. Lo que cambió es quién puede ponerse cada uniforme.
+
+- **Por qué.**
+  - Si se filtra la contraseña de `agenda`, con ella no se pueden usar los permisos de plataforma.
+  - En Kubernetes, cada servicio recibe solo su propia contraseña.
+- **El 403 del servicio.** `agenda` y `clinical` no atienden al administrador de plataforma. ¿Cómo lo sabe el
+  código, si `packages/common` es el mismo en los tres servicios?
+  - Al llegar la primera petición, `servedDbRoles()` (`packages/common/src/db.js`) le pregunta a la base a qué
+    perfiles puede cambiar el usuario conectado, con `pg_has_role(current_user, perfil, 'SET')`. Guarda la
+    respuesta en memoria.
+  - `identify` responde **403 "Este servicio no atiende a su rol"** sin abrir una transacción.
+  - Así la lista vive en un solo lugar: los `GRANT` de `00-init.sh`.
+- **La garantía de fondo sigue siendo la base.** Aunque el código fallara, `mc_agenda_svc` no puede hacer
+  `SET LOCAL ROLE mc_platform`: la base responde `42501`.
+- **`CONNECTION LIMIT` limita conexiones, no peticiones.**
+  - **Qué es una conexión:** una sesión abierta con PostgreSQL. Cada una es un proceso con su propia memoria.
+  - **Qué hace el tope:** impide que un servicio acapare las conexiones y deje sin base a los otros dos.
+  - **La regla:** copias previstas × pool de 10 (el de `db.js`), por dos, porque al actualizar un servicio
+    conviven un momento la copia vieja y la nueva.
+  - **El total:** la suma (80) queda por debajo de las 100 conexiones que PostgreSQL acepta por omisión, y que
+    comparte con Keycloak.
+  - Más conexiones no es más capacidad: la medición con pgbench de `docs/diseno-servicios.md`, sección 6, atendió
+    menos consultas con 50 conexiones que con 10.
+
 ### Experimentos
 
-Abran la consola como `mc_app` (`docker compose exec db psql -U mc_app -d medicitas`).
+Abran la consola como `mc_admin_svc` (`docker compose exec db psql -U mc_admin_svc -d medicitas`).
 
 **E4. Los roles.**
 
@@ -300,12 +408,17 @@ Abran la consola como `mc_app` (`docker compose exec db psql -U mc_app -d medici
 \du
 ```
 
-**E5. `mc_app` sin rol no puede leer nada.**
+**E5. El usuario de servicio sin perfil no puede leer nada.**
 
 ```sql
 SELECT count(*) FROM appointments;
--- ERROR:  permission denied for table appointments
+-- ERROR:  relation "appointments" does not exist
+SELECT count(*) FROM agenda.appointments;
+-- ERROR:  permission denied for schema agenda
 ```
+
+Sin perfil no tiene ni el permiso para entrar al schema (`USAGE`). Por eso el nombre simple ni siquiera se
+encuentra: PostgreSQL salta en silencio los schemas del `search_path` donde no puede entrar.
 
 **E6. `SET LOCAL ROLE` dura solo la transacción.**
 
@@ -314,7 +427,7 @@ BEGIN;
 SET LOCAL ROLE mc_reception;
 SELECT current_user, count(*) FROM appointments;   -- mc_reception, ~4000
 COMMIT;
-SELECT current_user;                                -- mc_app otra vez
+SELECT current_user;                                -- mc_admin_svc otra vez
 ```
 
 **E7. Recepción no puede leer notas clínicas.**
@@ -338,12 +451,39 @@ ROLLBACK;
 -- ERROR:  permission denied for table appointments
 ```
 
+**E8b. `agenda` no puede ponerse el uniforme de plataforma.** En una terminal aparte:
+
+```bash
+docker compose exec db psql -U mc_agenda_svc -d medicitas
+```
+
+```sql
+BEGIN;
+SET LOCAL ROLE mc_platform;     -- ERROR:  permission denied to set role "mc_platform"
+ROLLBACK;
+SELECT u, p, pg_has_role(u, p, 'SET') AS puede
+  FROM unnest(ARRAY['mc_admin_svc','mc_agenda_svc']) u,
+       unnest(ARRAY['mc_platform','mc_reception']) p;
+```
+
+**E8c. El tope de conexiones.**
+
+```sql
+SELECT rolname, rolconnlimit FROM pg_roles WHERE rolname LIKE 'mc\_%svc';   -- 20, 40, 20
+```
+
+Para verlo actuar se necesitan 21 sesiones a la vez como `mc_clinical_svc`. La número 21 recibe
+`FATAL: too many connections for role "mc_clinical_svc"`.
+
 ### Preguntas de control
 
-3.1. ¿Qué pasaría si `mc_app` tuviera `INHERIT` en vez de `NOINHERIT`?
+3.1. ¿Qué pasaría si un usuario de servicio tuviera `INHERIT` en vez de `NOINHERIT`?
 3.2. ¿Por qué `SET LOCAL ROLE` y no `SET ROLE`?
 3.3. Un profesional quiere ver los horarios de otro profesional de su clínica. ¿Lo impide la base? ¿Quién debe
 impedirlo, si corresponde?
+3.4. Un token de plataforma llega al servicio `agenda`. ¿Qué responde y qué capa lo decide? ¿Y si esa capa tuviera
+un error?
+3.5. ¿Por qué no subir el `CONNECTION LIMIT` de `agenda` a 500 para que aguante más demanda?
 
 ---
 
@@ -383,7 +523,7 @@ SELECT tstzrange('2026-11-02 09:00', '2026-11-02 09:30') && tstzrange('2026-11-0
 -- seguidas = f, cruzadas = t
 ```
 
-### 4.2 Las tablas por área 🟡
+### 4.2 Las tablas por área y por schema 🟡
 
 | Área | Tablas | Notas |
 |---|---|---|
@@ -394,6 +534,44 @@ SELECT tstzrange('2026-11-02 09:00', '2026-11-02 09:30') && tstzrange('2026-11-0
 | Pacientes | `genders`, `patients`, `contact_types`, `patient_contacts` | Los contactos son dato sensible (RF18) |
 | Citas | `appointment_statuses`, `appointments`, `clinical_notes` | El corazón del sistema |
 | Bitácoras | `event_types`, `data_objects`, `audit_logs`, `severities`, `system_errors_logs` | Auditoría (RF18) y errores técnicos |
+
+**Desde la etapa 2, cada tabla vive en el schema del servicio que la escribe.** Un *schema* es como una carpeta
+dentro de la base: varias carpetas comparten el mismo servidor.
+
+| Schema | Servicio | Tablas |
+|---|---|---|
+| `admin` | clínicas, usuarios, catálogo (RF1–RF4) | las de clínicas, usuarios y permisos, geografía y servicios; además `professional_contacts`, `contact_types`, `severities` y `system_errors_logs` (19) |
+| `agenda` | horarios y citas (RF5–RF13, RF16, RF20, RF21) | `professional_schedules`, `blockades`, `appointment_statuses`, `appointments` (4) |
+| `clinical` | pacientes y bitácora (RF14, RF15, RF18, RF19) | `patients`, `patient_contacts`, `genders`, `clinical_notes`, `event_types`, `data_objects`, `audit_logs` (7) |
+
+- **Son schemas por servicio, no por clínica.** No hay que confundirlos con el "esquema por tenant" de la
+  sección 4.3, que se descartó. Las tres clínicas comparten las mismas tablas, y el tenant sigue siendo `clinic_id`.
+- **Las llaves foráneas que cruzan de schema se conservan.**
+  - Hay 20: por ejemplo, `agenda.appointments` apunta a `clinical.patients` y `clinical.clinical_notes` apunta a
+    `agenda.appointments`.
+  - Por eso se eligió una sola base: con bases separadas, esas llaves (y la protección de I5) se perderían.
+  - El diccionario las muestra con su schema (`FK → admin.users`).
+- **Cómo se encuentran las tablas: el `search_path`.** Es la lista de schemas donde PostgreSQL busca una tabla
+  cuando no se le indica cuál.
+  - Cada `CREATE TABLE` nombra su schema (`CREATE TABLE agenda.appointments`), así el reparto se ve en el SQL.
+  - El resto usa nombres simples: los scripts empiezan con `SET search_path = admin, agenda, clinical, public`, y los
+    usuarios de servicio tienen esa misma lista. Por eso **las consultas de la API no cambiaron**.
+  - **Regla:** los nombres de tabla tienen que ser únicos entre los tres schemas.
+- **Las funciones de los triggers fijan su propia lista** (`SET search_path` en la definición), para no depender
+  de quién dispara el trigger. En `appointments_check_agenda`, que es `SECURITY DEFINER` (corre con los permisos
+  de su dueño), es además una medida de seguridad: sin esa lista fija, quien la llama podría hacerle leer una tabla
+  falsa con el mismo nombre.
+- **Permiso para entrar (`USAGE`).** Cada perfil necesita `USAGE` sobre un schema para tocar sus tablas.
+  `mc_platform` solo lo tiene sobre `admin`: la plataforma no ve agenda ni datos clínicos.
+
+**E9b. Los schemas y su contenido** (como `mc_owner`):
+
+```sql
+\dn+
+SELECT table_schema, count(*) FROM information_schema.tables
+ WHERE table_schema IN ('admin','agenda','clinical') GROUP BY 1 ORDER BY 1;   -- 19, 4, 7
+SELECT proname, proconfig FROM pg_proc WHERE pronamespace = 'agenda'::regnamespace;
+```
 
 ### 4.3 Multi-tenancy en el motor 🔴
 
@@ -765,7 +943,7 @@ ROLLBACK;
 
 ### 4.6 Citas: el corazón del sistema 🔴
 
-Tabla `appointments`, en `db/sql/01-schema.sql:332`. Léanla completa.
+Tabla `agenda.appointments`, en `db/sql/01-schema.sql:349`. Léanla completa.
 
 **Las columnas clave:**
 
@@ -835,7 +1013,7 @@ nivel de aislamiento") explica por qué se descartaron `SERIALIZABLE` y `SELECT 
 
 #### Experimentos
 
-Como `mc_app`.
+Como `mc_admin_svc`.
 
 **E12. Reservar un espacio que ya está ocupado.**
 
@@ -853,7 +1031,7 @@ ROLLBACK;
 
 **E13. La carrera de verdad, con dos terminales.** Es el experimento más importante: es la pregunta rectora.
 
-*Preparación* (una sola vez, en cualquier terminal como `mc_app`): se crea un bloque de horario para Laura (usuaria
+*Preparación* (una sola vez, en cualquier terminal como `mc_admin_svc`): se crea un bloque de horario para Laura (usuaria
 6) dentro de 40 días, de 9:00 a 10:00, donde no hay citas.
 
 ```sql
@@ -865,7 +1043,7 @@ VALUES (1, 6, tstzrange((current_date + 40 + time '09:00') AT TIME ZONE 'America
 COMMIT;
 ```
 
-*Ronda 1.* Abran **dos terminales** como `mc_app`. En la **terminal 1**:
+*Ronda 1.* Abran **dos terminales** como `mc_admin_svc`. En la **terminal 1**:
 
 ```sql
 BEGIN;
@@ -954,12 +1132,12 @@ Un **trigger** es una función que el motor ejecuta automáticamente cuando ocur
 | `MC005` | Intento de modificar o borrar la bitácora | I6 |
 | `MC006` | El bloque de horario tiene citas reservadas | I3 |
 
-#### `set_updated_at` 🟡 (`db/sql/01-schema.sql:453`)
+#### `set_updated_at` 🟡 (`db/sql/01-schema.sql:474`)
 
 Pone `updated_at = now()` en cada `UPDATE`. En vez de crear 22 triggers a mano, un bloque `DO` recorre todas las
 tablas que tienen la columna `updated_at` y crea el trigger en cada una.
 
-#### `trg_appointments_10_set_period`: I4 🔴 (`:477`)
+#### `trg_appointments_10_set_period`: I4 🔴 (`:498`)
 
 - **Al insertar:** busca la duración del servicio y reescribe `period` como `[inicio, inicio + duración)`. Ignora
   cualquier fin que mande la aplicación.
@@ -973,7 +1151,7 @@ Esto es una segunda capa sobre el permiso por columna de la Parte 3: aunque algu
 `EXCLUDE` solo puede usar columnas de la propia fila, no consultar `services`; y la cita conserva la duración con la
 que se reservó aunque después cambie la del servicio.
 
-#### `trg_appointments_20_check_agenda`: I3 🔴 (`:527`)
+#### `trg_appointments_20_check_agenda`: I3 🔴 (`:550`)
 
 Al insertar una cita, revisa dos cosas:
 
@@ -996,7 +1174,7 @@ Dos detalles avanzados 🟡:
   poderoso, se le fija `SET search_path = public, pg_temp`: así nadie puede engañarla creando un objeto con el mismo
   nombre en otro esquema.
 
-#### `trg_appointments_30_check_status`: RF13 y RF12 🔴 (`:565`)
+#### `trg_appointments_30_check_status`: RF13 y RF12 🔴 (`:588`)
 
 ```text
                   ┌──► atendida      (2) ┐
@@ -1009,14 +1187,14 @@ Dos detalles avanzados 🟡:
 - Si la cita ya está en un estado final, **cualquier** cambio se rechaza con `MC002`.
 - `atendida` o `ausente` solo después de la hora de inicio (`now() >= inicio`); antes, `MC003` (RF12).
 
-#### `trg_professional_schedules_guard`: I3 desde el otro lado 🟡 (`:597`)
+#### `trg_professional_schedules_guard`: I3 desde el otro lado 🟡 (`:620`)
 
 I3 se podría romper sin tocar la cita: borrando o recortando el bloque de horario donde está. Este trigger, al
 borrar o modificar un bloque, revisa si quedarían **citas reservadas fuera**; si es así, aborta con `MC006`. La
 variable `v_remaining` es lo que queda del bloque después del cambio (NULL si se borra o si se cambia de
 profesional). Para las ausencias se usa un bloqueo (`blockades`), no el borrado del horario.
 
-#### `trg_audit_logs_append_only` y `trg_audit_logs_no_truncate`: I6 🔴 (`:627`)
+#### `trg_audit_logs_append_only` y `trg_audit_logs_no_truncate`: I6 🔴 (`:650`)
 
 La función solo hace `RAISE EXCEPTION … MC005`. Se dispara antes de cualquier `UPDATE`, `DELETE` o `TRUNCATE`
 sobre la bitácora. Es la segunda capa: la primera es que ningún rol tiene esos permisos. Si alguien concediera
@@ -1025,7 +1203,7 @@ desactive el trigger a propósito, y por eso la app no se conecta como dueño).
 
 #### Experimentos
 
-**E16. Reservar a las 3 de la mañana** (como `mc_app`).
+**E16. Reservar a las 3 de la mañana** (como `mc_admin_svc`).
 
 ```sql
 BEGIN;
@@ -1061,7 +1239,7 @@ ROLLBACK;
 -- ERROR: Una cita no se mueve ni cambia de servicio: se reprograma (I4, RF10)
 ```
 
-**E19. Marcar como atendida una cita de mañana** (como `mc_app`).
+**E19. Marcar como atendida una cita de mañana** (como `mc_admin_svc`).
 
 ```sql
 BEGIN;
@@ -1099,7 +1277,7 @@ ROLLBACK;
 -- ERROR: El bloque de horario tiene citas reservadas; reprográmelas antes (I3)
 ```
 
-**E22. Atacar la bitácora, en dos capas.** Primero como `mc_app` con el rol del administrador:
+**E22. Atacar la bitácora, en dos capas.** Primero como `mc_admin_svc` con el rol del administrador:
 
 ```sql
 BEGIN;
@@ -1413,56 +1591,56 @@ docker compose exec redis redis-cli DBSIZE                        # 0: todavía 
 
 ## Parte 8. La aplicación Node
 
-Hoy es pequeña: 3 archivos en `app/src/` y un `Dockerfile`. El grueso del trabajo que falta está aquí.
+Desde la etapa 1, el código está en workspaces (sección 2.4). Hay un paquete compartido y un servicio:
 
-### 8.1 Lo que existe 🟡
+```
+packages/common/src/   auth.js, db.js, errors.js     ← los usan los tres servicios
+services/admin/src/    app.js, server.js, accounts.js, keycloak.js, routes/clinics.js, routes/users.js
+```
 
-- **`app/Dockerfile`:**
-  - copia primero `package.json` y `package-lock.json` y ejecuta `npm ci`: si las dependencias no cambian, Docker
-    reutiliza esa capa y la reconstrucción es rápida;
-  - `--omit=dev`: no instala herramientas de desarrollo en la imagen;
-  - `USER node`: el proceso no corre como root.
-- **`app/src/db.js`:** un *pool* de hasta 10 conexiones a Postgres. Los datos de conexión vienen de las variables
-  estándar `PGHOST`, `PGUSER`, etc., que define el compose. El manejador de `error` evita que una conexión caída
-  tumbe el proceso.
-- **`app/src/app.js`:** Express 5 con:
-  - `GET /health`, que hace `SELECT 1` y responde 200 o 503;
-  - un 404 para rutas inexistentes;
-  - un manejador de errores que nunca filtra detalles internos al cliente (500 "Error interno").
+### 8.1 El código compartido (`packages/common`) 🔴
 
-  Exporta la app **sin** abrir el puerto, para poder probarla con `supertest`.
-- **`app/src/server.js`:** abre el puerto y hace un **apagado ordenado**: ante `SIGTERM` (lo que envía
+- **`auth.js`.**
+  - `authenticate` valida el token con `jose`: la firma con las llaves públicas de Keycloak (JWKS), además de
+    `iss`, `aud` y `exp`. Si falla, responde **401**.
+  - `identify` busca al usuario por el `sub` del token y obtiene su clínica, su rol y sus permisos. Responde **403**
+    en estos casos:
+    - el servicio no atiende ese rol (sección 3.5);
+    - el usuario no está registrado;
+    - el usuario o su clínica están dados de baja;
+    - el rol del token no coincide con el registrado.
+  - `requirePermission('…')` revisa el permiso del dominio (sección 3.4).
+- **`db.js`.**
+  - Un *pool* de hasta 10 conexiones. Los datos de conexión salen de las variables estándar `PGHOST`, `PGUSER`,
+    etc., que define el compose.
+  - `withTransaction(rol, fn)` abre la transacción con `READ COMMITTED` explícito y hace `SET LOCAL ROLE` a un rol
+    de una lista fija, nunca a texto del cliente. Ejecuta `fn` y hace `COMMIT`.
+  - Ante un deadlock (`40P01`), repite la transacción completa, hasta 3 veces. Por eso dentro de `fn` solo va
+    trabajo sobre la base: Redis y Keycloak van después.
+  - `servedDbRoles()` le pregunta a la base qué perfiles atiende el servicio (sección 3.5).
+- **`errors.js`.**
+  - `HttpError` es un error con código HTTP.
+  - `parse` valida con zod y responde 400 con la lista de campos inválidos, en español.
+  - `toResponse` traduce los errores de PostgreSQL a HTTP: `23505` y `23503` → 409, `23514` → 400, `42501` → 403…
+  - **Pendiente (etapa 4):** traducir `MC001`–`MC006` (hoy responden 500) y distinguir si el `23P01` es del
+    profesional o del paciente.
+
+### 8.2 El servicio `admin` 🟡
+
+- **`app.js`:** Express 5 con `/health` (`SELECT 1`, 200 o 503), `/me`, `/clinics` (RF1) y `/users` (RF2). También
+  tiene un 404 para rutas inexistentes y un manejador de errores que nunca filtra detalles internos (500
+  "Error interno").
+- **`server.js`:** abre el puerto y hace un **apagado ordenado**. Ante `SIGTERM` (lo que envía
   `docker compose stop`) deja de aceptar peticiones y cierra el pool antes de salir.
-
-### 8.2 Lo que viene (paso 4) 🔴
-
-1. **Middleware de autenticación:** validar el token con la librería `jose` (firma con JWKS, `iss`, `aud`, `exp`) y
-   cargar el usuario desde `users`.
-2. **Un ayudante de transacciones**, más o menos así:
-
-   ```js
-   // Idea, todavía no existe
-   await client.query('BEGIN');
-   await client.query(`SET LOCAL ROLE ${rolDeBase}`);   // mc_reception, etc. (de una lista fija, nunca del cliente)
-   // … consultas parametrizadas: client.query('… WHERE clinic_id = $1', [usuario.clinicId])
-   await client.query('COMMIT');
-   ```
-
-3. **Traducción de errores de la base a HTTP:**
-
-   | Error de la base | Significado | HTTP |
-   |---|---|---|
-   | `23P01` | espacio ocupado (I1, I2) | 409 |
-   | `MC001` | fuera de horario o en bloqueo | 409 o 422 |
-   | `MC002`, `MC003`, `MC004`, `MC006` | regla de negocio | 409 o 422 |
-   | `23503` | referencia inexistente o de otra clínica | 404 o 422 |
-   | `23514` | `CHECK` violado | 422 |
-   | `42501` | sin permiso en la base | 403 |
-   | `40P01` | deadlock | reintentar o 409 |
-
-   Los códigos exactos se decidirán y documentarán en el contrato de rutas del README.
-
-4. **Consultas parametrizadas** siempre (`$1`, `$2`), nunca concatenando texto del usuario: así no hay inyección SQL.
+- **`accounts.js` y `keycloak.js`:** crean la cuenta en Keycloak y después la fila en `users`. Keycloak y
+  PostgreSQL no comparten transacción: si la base falla, se borra el usuario de Keycloak. Si hasta eso falla, el
+  usuario queda sin fila en `users` y recibe 403. El sistema **falla cerrado**, es decir, sin acceso.
+- **`services/admin/Dockerfile`:**
+  - copia primero los `package.json` y el `package-lock.json` de la raíz, y ejecuta
+    `npm ci --omit=dev --workspace services/admin`. Si las dependencias no cambian, Docker reutiliza esa capa;
+  - `USER node`: el proceso no corre como root.
+- **Siempre consultas parametrizadas** (`$1`, `$2`), nunca texto del usuario pegado al SQL: así no hay inyección
+  SQL. La única excepción es `SET LOCAL ROLE`, que antes valida el rol contra una lista fija.
 
 ---
 
@@ -1488,8 +1666,8 @@ Hoy es pequeña: 3 archivos en `app/src/` y un `Dockerfile`. El grueso del traba
 
 | RF | Qué | Base de datos | API |
 |---|---|---|---|
-| RF1 | Alta de clínica con su primer admin | ✔ tablas y permisos | ✘ |
-| RF2 | Usuarios: alta, baja lógica, rol | ✔ `users`, `ck_users_platform_admin` | ✘ |
+| RF1 | Alta de clínica con su primer admin | ✔ tablas y permisos | ✔ `POST /clinics` (servicio `admin`) |
+| RF2 | Usuarios: alta, baja lógica, rol | ✔ `users`, `ck_users_platform_admin` | ✔ `/users` (servicio `admin`) |
 | RF3 | Catálogo de servicios | ✔ `services` | ✘ |
 | RF4 | Profesionales y sus servicios | ✔ `professionals`, `services_per_professionals` | ✘ |
 | RF5 | Horario semanal | ✔ `professional_schedules` con `EXCLUDE` | ✘ |
@@ -1504,7 +1682,7 @@ Hoy es pequeña: 3 archivos en `app/src/` y un `Dockerfile`. El grueso del traba
 | RF14 | Pacientes | ✔ `patients`, `patient_contacts` | ✘ |
 | RF15 | Nota clínica del profesional que atendió | ◐ tabla y permisos; "el que atendió" lo filtra la API | ✘ |
 | RF16 | Historial del paciente | ✔ índice | ✘ |
-| RF17 | Autenticación y matriz de permisos | ✔ realm, roles, matriz | ✘ validar tokens |
+| RF17 | Autenticación y matriz de permisos | ✔ realm, roles, matriz | ✔ `authenticate`, `identify`, `requirePermission` |
 | RF18 | Bitácora de accesos | ◐ tabla protegida; registrar cada acceso lo hace la API | ✘ |
 | RF19 | Consultar la bitácora con filtros | ✔ índices | ✘ |
 | RF20 | Agenda del día | ✔ índices; permiso propuesto | ✘ |
@@ -1513,6 +1691,13 @@ Hoy es pequeña: 3 archivos en `app/src/` y un `Dockerfile`. El grueso del traba
 **Otros entregables:** pruebas automatizadas (unitarias, integración, carrera, fugas, una por invariante) ✘ ·
 `EXPLAIN ANALYZE` de los índices ✘ · contrato de rutas en el README ✘ · reporte de pruebas ✘ · colección de
 peticiones ✘ · video ✘ · `Uso_de_IA.md` actualizado ✘.
+
+**Requisitos del profesor fuera de la rúbrica:**
+- **Separación en servicios ◐:**
+  - hechos los workspaces, los schemas y los usuarios por servicio;
+  - faltan `agenda`, `clinical` y el gateway.
+- **Kubernetes ✘.**
+- **Módulo del §9:** ✘ sin elegir.
 
 ---
 
@@ -1545,10 +1730,22 @@ No. Los scripts de inicialización solo corren con el volumen vacío. Hay que ha
 volver a levantar.
 </details>
 
-<details><summary><b>3.1</b> ¿Qué pasaría si mc_app tuviera INHERIT?</summary>
+<details><summary><b>2.3</b> ¿Por qué packages/common no tiene lógica de negocio y por qué una sola copia de zod?</summary>
 
-Tendría a la vez los permisos de los cuatro roles. Si el código olvidara el `SET ROLE`, la consulta se ejecutaría con
-todos los permisos (por ejemplo, recepción podría leer notas clínicas). Con `NOINHERIT` falla cerrado.
+`common` lo usan los tres servicios. Si tuviera reglas de citas o de pacientes, un cambio pensado para un servicio
+afectaría a los otros, y los servicios quedarían acoplados por el código. Por eso solo tiene seguridad, base y
+errores.
+
+La copia única de zod importa porque `errors.js` configura los mensajes en español con `z.config(...)`, y esa
+configuración vive dentro de la copia de zod que la ejecuta. Un servicio con su propia copia respondería en inglés
+sin que nada fallara. Por eso las dependencias se agregan desde la raíz, con `-w`.
+</details>
+
+<details><summary><b>3.1</b> ¿Qué pasaría si un usuario de servicio tuviera INHERIT?</summary>
+
+Tendría a la vez los permisos de todos sus perfiles. Si el código olvidara el `SET ROLE`, la consulta se ejecutaría
+con todos esos permisos: por ejemplo, una petición de recepción podría leer notas clínicas. Con `NOINHERIT` falla
+cerrado.
 </details>
 
 <details><summary><b>3.2</b> ¿Por qué SET LOCAL ROLE y no SET ROLE?</summary>
@@ -1562,6 +1759,27 @@ quedaría pegado a la conexión y la siguiente petición, quizá de otro usuario
 No: todos los profesionales usan `mc_professional`, que puede leer horarios. Ver horarios de colegas es razonable,
 pero *modificar* solo los propios (`schedules.manage_own`) lo debe filtrar la API comparando con el usuario del
 token.
+</details>
+
+<details><summary><b>3.4</b> Un token de plataforma llega a agenda. ¿Qué responde y quién lo decide?</summary>
+
+Responde 403 "Este servicio no atiende a su rol". Lo decide `identify`, sin abrir una transacción: al arrancar,
+`servedDbRoles()` le preguntó a la base (`pg_has_role`) a qué perfiles puede cambiar `mc_agenda_svc`, y
+`mc_platform` no está entre ellos.
+
+Si el código tuviera un error y siguiera adelante, la base igual lo detiene: `SET LOCAL ROLE mc_platform` como
+`mc_agenda_svc` responde `42501`. El 403 es la respuesta limpia; la garantía es la base.
+</details>
+
+<details><summary><b>3.5</b> ¿Por qué no subir el CONNECTION LIMIT de agenda a 500?</summary>
+
+Porque más conexiones no es más capacidad.
+- **El costo:** cada conexión es un proceso de PostgreSQL con su propia memoria, y todas compiten por los mismos
+  núcleos. En la medición con pgbench, 50 conexiones atendieron menos consultas que 10.
+- **El límite real:** PostgreSQL acepta 100 conexiones por omisión, compartidas con `admin`, `clinical` y
+  Keycloak. Con 500, `agenda` podría dejar sin base a los demás.
+- **Cómo se escala:** con varias copias del servicio, Redis para la disponibilidad y PgBouncer, que reúne muchas
+  conexiones de los servicios en pocas conexiones reales (`docs/diseno-servicios.md`, sección 6).
 </details>
 
 <details><summary><b>4.1</b> ¿Qué significa EXCLUDE USING gist (professional_id WITH =, period WITH &&)?</summary>
@@ -1689,11 +1907,16 @@ token emitido para otra aplicación del mismo Keycloak no sirva contra la nuestr
 | SQLSTATE | Código de error de 5 caracteres (`23P01`, `42501`, `MC001`) |
 | `SECURITY DEFINER` | La función corre con los permisos de su dueño, no de quien la invoca |
 | `search_path` | Lista de esquemas donde Postgres busca los nombres de tablas y funciones |
+| Schema | "Carpeta" dentro de una base. Aquí hay uno por servicio (`admin`, `agenda`, `clinical`), no uno por clínica |
+| `USAGE` (sobre un schema) | Permiso para entrar a un schema; sin él, sus tablas no se ven aunque se tenga permiso sobre ellas |
 | `FOR SHARE` | Bloqueo de filas que impide modificarlas o borrarlas hasta que termine la transacción |
 | Nivel de aislamiento | Qué ve una transacción de las demás; Postgres usa `READ COMMITTED` por defecto |
 | Deadlock | Dos transacciones que se esperan mutuamente; Postgres aborta una (`40P01`) |
 | Rol de base de datos | Usuario o grupo de permisos en Postgres |
 | `NOINHERIT` / `SET ROLE` | No recibir automáticamente los permisos de los roles de los que se es miembro / convertirse en uno de ellos |
+| Usuario de servicio | Usuario de base con el que se conecta un servicio (`mc_admin_svc`…); sin permisos propios, solo puede cambiar a sus perfiles |
+| `pg_has_role(u, r, 'SET')` | Dice si el usuario `u` puede hacer `SET ROLE` al rol `r`; así sabe cada servicio qué perfiles atiende |
+| `CONNECTION LIMIT` | Tope de conexiones simultáneas de un usuario de base; no limita peticiones |
 | Menor privilegio | Dar a cada componente solo los permisos que necesita |
 | Defensa en profundidad | Varias capas de protección independientes |
 | Append-only | Solo se agregan registros; nunca se modifican ni borran |
@@ -1716,6 +1939,8 @@ token emitido para otra aplicación del mismo Keycloak no sirva contra la nuestr
 | Healthcheck | Prueba periódica que dice si un contenedor está sano |
 | Volumen | Almacenamiento de Docker que sobrevive a los contenedores; `down -v` lo borra |
 | Pool de conexiones | Conjunto de conexiones a la base que se reutilizan entre peticiones |
+| Workspace (npm) | Proyecto dentro de otro en el mismo repositorio, con un `package-lock.json` compartido (`packages/common`, `services/admin`) |
+| Arquitectura basada en servicios | Varios servicios que se despliegan por separado y comparten una base; a diferencia de los microservicios, no tiene una base por servicio |
 | Determinista | Que con la misma entrada siempre produce la misma salida |
 
 ---
@@ -1726,12 +1951,13 @@ token emitido para otra aplicación del mismo Keycloak no sirva contra la nuestr
 # Ciclo de vida
 docker compose up -d --build --wait          # levantar
 docker compose ps                            # estado
-docker compose logs -f app                   # logs de un servicio
+docker compose logs -f admin                 # logs de un servicio
+docker compose up -d --build --remove-orphans  # tras renombrar un servicio (app → admin): borra el contenedor viejo
 docker compose down                          # apagar (conserva los datos)
 docker compose down -v                       # apagar y borrar los datos (reinicio total)
 
 # Consolas
-docker compose exec db psql -U mc_app -d medicitas      # como la API
+docker compose exec db psql -U mc_admin_svc -d medicitas   # como el servicio admin de la API
 docker compose exec db psql -U mc_owner -d medicitas    # como el dueño
 docker compose exec redis redis-cli                     # Redis
 

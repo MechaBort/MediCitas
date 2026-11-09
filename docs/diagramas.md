@@ -25,7 +25,7 @@ flowchart LR
     cliente -- "1 pide un token (OIDC)" --> kc
     cliente -- "2 petición con Bearer token" --> admin
     admin -- "3 llaves públicas (JWKS)" --> kc
-    admin -- "4 SQL como mc_app + SET LOCAL ROLE" --> medicitas
+    admin -- "4 SQL como mc_admin_svc + SET LOCAL ROLE" --> medicitas
     admin -- "5 caché de disponibilidad (RF7)" --> redis
     kc --> kcdb
     realm -. "se importa al primer arranque" .-> kc

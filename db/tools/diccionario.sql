@@ -26,9 +26,10 @@ CREATE TEMP VIEW dd_areas (area_order, area, tables) AS VALUES
     (7, 'Bitácoras',
         ARRAY['event_types', 'data_objects', 'audit_logs', 'severities', 'system_errors_logs']);
 
--- Las tablas viven en los schemas de los servicios (db/sql/01-schema.sql). Este script no
--- fija search_path a propósito: así las FKs y las funciones salen con su schema
+-- Las tablas viven en los schemas de los servicios (db/sql/01-schema.sql). El search_path
+-- queda solo con pg_catalog a propósito: así las FKs y las funciones salen con su schema
 -- (FK → admin.users), lo que deja ver qué relaciones cruzan de un servicio a otro.
+SET search_path = pg_catalog;
 CREATE TEMP VIEW dd_schemas (schema_order, schema_name) AS VALUES
     (1, 'admin'), (2, 'agenda'), (3, 'clinical');
 

@@ -7,7 +7,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:?Falta POSTGRES_USER en .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Falta POSTGRES_PASSWORD en .env}
       DB_OWNER_PASSWORD: ${DB_OWNER_PASSWORD:?Falta DB_OWNER_PASSWORD en .env}
-      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?Falta DB_APP_PASSWORD en .env}
+      DB_ADMIN_SVC_PASSWORD: ${DB_ADMIN_SVC_PASSWORD:?Falta DB_ADMIN_SVC_PASSWORD en .env}
+      DB_AGENDA_SVC_PASSWORD: ${DB_AGENDA_SVC_PASSWORD:?Falta DB_AGENDA_SVC_PASSWORD en .env}
+      DB_CLINICAL_SVC_PASSWORD: ${DB_CLINICAL_SVC_PASSWORD:?Falta DB_CLINICAL_SVC_PASSWORD en .env}
       KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Falta KEYCLOAK_DB_PASSWORD en .env}
     volumes:
       - db-data:/var/lib/postgresql
@@ -65,8 +67,9 @@ services:
       PGHOST: db
       PGPORT: 5432
       PGDATABASE: medicitas
-      PGUSER: mc_app
-      PGPASSWORD: ${DB_APP_PASSWORD:?Falta DB_APP_PASSWORD en .env}
+      # Cada servicio entra con su propio usuario de base (db/init/00-init.sh).
+      PGUSER: mc_admin_svc
+      PGPASSWORD: ${DB_ADMIN_SVC_PASSWORD:?Falta DB_ADMIN_SVC_PASSWORD en .env}
       KEYCLOAK_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/medicitas
       KEYCLOAK_AUDIENCE: medicitas-api
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/medicitas/protocol/openid-connect/certs
