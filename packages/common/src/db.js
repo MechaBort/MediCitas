@@ -15,6 +15,27 @@ pool.on('error', (err) => {
 // de ponerlo en el SQL: a esa sentencia nunca llega texto que venga del cliente.
 const DB_ROLES = new Set(['mc_platform', 'mc_clinic_admin', 'mc_reception', 'mc_professional']);
 
+// Perfiles a los que el usuario de conexión de este servicio puede cambiar con SET LOCAL ROLE
+// (mc_admin_svc: los cuatro; mc_agenda_svc y mc_clinical_svc: todos menos mc_platform).
+// No se escriben aquí: se le preguntan a la base, que los define en db/init/00-init.sh, así
+// la lista vive en un solo lugar. Se consulta una vez y se guarda; si la consulta falla, se
+// vuelve a intentar en la siguiente petición.
+let servedRoles;
+export function servedDbRoles() {
+  servedRoles ??= pool
+    .query(
+      `SELECT rolname FROM pg_roles
+        WHERE rolname = ANY ($1) AND pg_has_role(current_user, oid, 'SET')`,
+      [[...DB_ROLES]],
+    )
+    .then((result) => new Set(result.rows.map((row) => row.rolname)))
+    .catch((err) => {
+      servedRoles = undefined;
+      throw err;
+    });
+  return servedRoles;
+}
+
 const DEADLOCK = '40P01';
 const MAX_ATTEMPTS = 3;
 
@@ -24,7 +45,7 @@ const MAX_ATTEMPTS = 3;
 // - El nivel de aislamiento se fija explícito en READ COMMITTED en lugar de depender del
 //   valor por omisión (ver "Concurrencia y nivel de aislamiento" en el README).
 // - SET LOCAL ROLE dura solo hasta el COMMIT o ROLLBACK: la conexión vuelve al pool como
-//   mc_app, sin permisos, y la siguiente petición no hereda el rol de esta.
+//   el usuario del servicio, sin permisos, y la siguiente petición no hereda el rol de esta.
 // - Si Postgres aborta la transacción por un deadlock, se repite completa. Por eso fn no
 //   debe tener efectos fuera de la base (invalidar la caché, por ejemplo, va después).
 export async function withTransaction(dbRole, fn) {

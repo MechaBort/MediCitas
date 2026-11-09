@@ -4,7 +4,8 @@
 -- Los roles mc_platform, mc_clinic_admin, mc_reception y mc_professional los crea
 -- db/init/00-init.sh (crear roles exige ser superusuario). Aquí mc_owner, como
 -- dueño de las tablas, les concede permisos según la matriz del README.
--- mc_app no recibe nada directo: en cada transacción hace SET LOCAL ROLE.
+-- Los usuarios de servicio (mc_admin_svc, mc_agenda_svc, mc_clinical_svc) no reciben
+-- nada directo: en cada transacción hacen SET LOCAL ROLE a uno de estos perfiles.
 -- =============================================================================
 
 -- Las tablas viven en los schemas admin, agenda y clinical (ver 01-schema.sql).

@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, jwtVerify, errors } from 'jose';
-import { withTransaction } from './db.js';
+import { servedDbRoles, withTransaction } from './db.js';
 
 // Llaves públicas del realm. jose las descarga la primera vez, las guarda en memoria
 // y solo vuelve a pedirlas si llega un token firmado con una llave que no conoce
@@ -62,8 +62,9 @@ const IDENTITY_SQL = `
 
 // Asocia la identidad del token con su usuario en la base. La clínica sale de aquí y no de la
 // petición: a partir de este punto toda consulta filtra por req.user.clinicId (I5).
-// 403 si el token no trae exactamente un rol del dominio, si el sub no está registrado,
-// si el usuario o su clínica están dados de baja, o si el rol registrado no es el del token.
+// 403 si el token no trae exactamente un rol del dominio, si este servicio no atiende ese rol,
+// si el sub no está registrado, si el usuario o su clínica están dados de baja, o si el rol
+// registrado no es el del token.
 export async function identify(req, res, next) {
   const tokenRoles = (req.token.realm_access?.roles ?? []).filter((r) => Object.hasOwn(DB_ROLE_BY_TOKEN_ROLE, r));
   if (tokenRoles.length !== 1) {
@@ -73,6 +74,13 @@ export async function identify(req, res, next) {
   const dbRole = DB_ROLE_BY_TOKEN_ROLE[role];
 
   try {
+    // Un rol que este servicio no atiende (la plataforma en agenda o clinical) se rechaza
+    // antes de abrir una transacción. Igual la base lo impediría: el usuario del servicio
+    // no puede hacer SET LOCAL ROLE a ese perfil.
+    if (!(await servedDbRoles()).has(dbRole)) {
+      return forbidden(res, 'Este servicio no atiende a su rol');
+    }
+
     const user = await withTransaction(dbRole, async (client) =>
       (await client.query(IDENTITY_SQL, [req.token.sub])).rows[0]);
 

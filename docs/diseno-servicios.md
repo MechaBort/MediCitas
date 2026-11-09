@@ -141,8 +141,8 @@ dirección, y si cambiara, todos los servicios rechazarían los tokens.
 - **Lo que se sacrifica.** `agenda` y `clinical` dependen de la estructura de la tabla `users`. Si esa tabla
   cambia, hay que revisar los tres servicios.
 
-**Decisión: un usuario de base por servicio.** Hoy existe un único usuario de conexión, `mc_app`, que usan todas
-las rutas. Se reemplaza por uno por servicio.
+**Decisión: un usuario de base por servicio.** Antes existía un único usuario de conexión, `mc_app`, que usaban
+todas las rutas. Desde la etapa 3 hay uno por servicio (**implementado** en `db/init/00-init.sh`).
 
 | Usuario de base | Perfiles que puede usar con `SET LOCAL ROLE` |
 |---|---|
@@ -160,8 +160,44 @@ perfiles y sus permisos (`db/sql/02-grants.sql`) **no cambian**.
     que guarda contraseñas).
   - Cada usuario tiene un `CONNECTION LIMIT` (un tope de conexiones simultáneas, no de peticiones), para que un
     servicio no pueda acaparar todas las conexiones de la base.
-- **Un token de plataforma en `agenda` o `clinical` recibe 403 sin consultar la base.** Esos servicios no tienen
-  nada que ofrecerle.
+- **Un token de plataforma en `agenda` o `clinical` recibe 403 sin abrir una transacción.** Esos servicios no
+  tienen nada que ofrecerle.
+
+**Decisión de la etapa 3: cada servicio le pregunta a la base qué perfiles atiende.**
+- **Problema.** `identify` necesita saber qué roles del token atiende el servicio donde corre, para responder 403
+  a los demás. El código de `packages/common` es el mismo en los tres servicios.
+- **Elegido.** Al llegar la primera petición, `servedDbRoles()` (`packages/common/src/db.js`) consulta
+  `pg_has_role(current_user, perfil, 'SET')`. Esa función dice a qué perfiles puede cambiar el usuario conectado.
+  El resultado se guarda en memoria y no se vuelve a consultar.
+- **Por qué.** La lista vive en un solo lugar, los `GRANT` de `00-init.sh`. Si mañana `agenda` deja de atender a
+  algún rol, se cambia el `GRANT` y el código se entera solo.
+- **Alternativas descartadas.**
+  - **Escribir la lista en el código de cada servicio.** Serían dos copias de la misma regla, la del código y la
+    de la base, que pueden desalinearse.
+  - **Leerla de una variable de entorno.** Es otra copia más, que además puede quedar mal configurada en Compose o
+    en Kubernetes.
+- **Lo que se sacrifica.** La primera petición de cada copia hace una consulta extra. Si esa consulta falla, la
+  petición responde 500 y la siguiente vuelve a intentarlo.
+- **Si el código fallara, la base igual lo impide.** `mc_agenda_svc` no puede hacer `SET LOCAL ROLE mc_platform`:
+  la base responde `42501`. El 403 del código es la respuesta limpia; la garantía es la base.
+
+**Decisión de la etapa 3: los topes de conexión.**
+
+| Usuario | Tope | Cuenta |
+|---|---|---|
+| `mc_admin_svc` | 20 | 1 copia × pool de 10, por 2 |
+| `mc_agenda_svc` | 40 | La mayor carga: deja lugar para varias copias, o para el pool de PgBouncer en Kubernetes |
+| `mc_clinical_svc` | 20 | 1 copia × pool de 10, por 2 |
+
+- **Regla.** Copias previstas × tamaño del pool (10, en `db.js`), por dos. Se duplica porque, al actualizar un
+  servicio, conviven un momento la copia vieja y la nueva.
+- **Límite total.** La suma, 80, queda por debajo de las 100 conexiones que PostgreSQL acepta por omisión, y que
+  comparte con Keycloak y con las conexiones reservadas al superusuario.
+- **En Kubernetes** quien abre las conexiones es PgBouncer, que entra con el usuario de cada servicio. Ahí el tope
+  limita el pool real de ese servicio, sin importar cuántas copias tenga.
+- **Lo que se sacrifica.** Si `agenda` necesitara más de 40 conexiones reales, la conexión 41 se rechaza
+  ("too many connections for role"). Es preferible a que `agenda` deje sin conexiones a `admin` y `clinical`. El
+  número se ajusta con la medición de carga.
 - **`mc_platform` solo tiene `USAGE` sobre el schema `admin`.** `USAGE` es el permiso para entrar a un schema.
   Así, los permisos de lectura sobre catálogos de otros schemas no le sirven, y eso es a propósito.
 - **Lo que se sacrifica.** "Cada servicio solo escribe en su schema" es una **regla del código**, revisada en
