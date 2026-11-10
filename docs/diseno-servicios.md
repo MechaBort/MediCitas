@@ -69,9 +69,9 @@ packages/
   common/src/           auth.js, db.js y errors.js (antes en app/src)
 services/
   admin/                el código que antes estaba en app/, con su Dockerfile
-  agenda/               (etapa 5)
-  clinical/             (etapa 5)
-gateway/                (etapa 5)
+  agenda/               desde la etapa 5, con su Dockerfile; sus rutas llegan en el bloque B
+  clinical/             desde la etapa 5, con su Dockerfile; sus rutas llegan en el bloque B
+gateway/                desde la etapa 5
   nginx.conf
 db/                     sin cambios de ubicación
 keycloak/
@@ -155,6 +155,36 @@ carga como ConfigMap (un archivo de configuración que Kubernetes monta dentro d
 
 Keycloak **no** pasa por el gateway: conserva su propia dirección. El campo `iss` (emisor) del token incluye esa
 dirección, y si cambiara, todos los servicios rechazarían los tokens.
+
+**Decisiones de la etapa 5: cómo quedó el gateway (`gateway/nginx.conf`).**
+- **Mismo puerto que antes.** El gateway escucha en el 3000, el que usaba la API cuando era un solo servicio, así
+  que el README y los `curl` no cambian. Los servicios ya no publican puertos: solo se llega a ellos por el gateway.
+- **`/me` y `/health` van a `admin`,** donde estaban antes del gateway, para no cambiar el contrato documentado.
+  `agenda` y `clinical` tienen su propio `/health`, que usa solo el healthcheck de su contenedor.
+- **Cada servicio responde con el header `X-MediCitas-Service`** y su nombre. Sirve para comprobar, desde afuera,
+  qué servicio contestó cada ruta; también en la demostración de Kubernetes.
+- **Los prefijos de `agenda` y `clinical` ya exigen token, aunque todavía no tengan rutas.** Sin token responden
+  401, con el token de la plataforma 403 ("Este servicio no atiende a su rol") y con un usuario válido 404. Así la
+  cadena gateway → servicio → identidad se puede probar desde ya.
+- **Errores en JSON.** Un prefijo desconocido responde 404 y un servicio caído 503, los dos con el formato
+  `{ "error": ... }` del resto de la API, no con las páginas HTML de Nginx.
+- **Un servicio caído responde en 2 segundos, no en 60.** Por omisión, Nginx espera hasta 60 s para conectarse a
+  un servicio, y en la verificación una petición a `agenda` detenido quedó colgada. Dentro de la red una conexión
+  sana tarda milisegundos, así que se fijó `proxy_connect_timeout 2s`: el cliente recibe el 503 enseguida y los
+  otros servicios siguen respondiendo.
+- **Conexiones reutilizadas.** El gateway mantiene abiertas las conexiones hacia cada servicio (`keepalive`) en vez
+  de abrir una por petición. Nginx solo reenvía bytes; su costo por petición es de una fracción de milisegundo y
+  una sola copia atiende decenas de miles de peticiones por segundo. El límite de la meta está en la base, no aquí.
+- **Los nombres de los servicios se resuelven una vez, al arrancar.**
+  - **Por qué.** Así el archivo no depende de la dirección del DNS, que es distinta en Compose y en Kubernetes, y
+    se cumple que el mismo archivo sirva en los dos.
+  - **Alternativa descartada.** Volver a resolver los nombres cada pocos segundos (`resolver` de Nginx). Obliga a
+    escribir la dirección del DNS en el archivo, y se pierde el archivo único.
+  - **Lo que se sacrifica.** En Compose, si se recrea el contenedor de un servicio, su dirección puede cambiar (en
+    la verificación Docker reutilizó la misma). Si cambia, el gateway responde 503 en esas rutas hasta reiniciarlo
+    (`docker compose restart gateway`). En Kubernetes no pasa, porque la dirección de un Service es fija.
+- **Réplicas.** En Kubernetes el gateway es un Deployment con dos copias o más detrás de un Service, para que no sea
+  un punto único de falla. En Compose basta una.
 
 ---
 

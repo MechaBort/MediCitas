@@ -146,13 +146,16 @@ La API también validará, pero para dar **mensajes claros** (un 409 con "espaci
 
 ## Parte 2. Arquitectura y Docker Compose
 
-### 2.1 Los cuatro servicios 🔴
+### 2.1 Los servicios del compose 🔴
 
 | Servicio | Imagen | Qué hace | Puerto en tu máquina |
 |---|---|---|---|
 | `db` | `postgres:18-alpine` | Guarda todo, en dos bases separadas: `medicitas` (la app) y `keycloak` (estado de Keycloak) | `127.0.0.1:5432` |
 | `keycloak` | `quay.io/keycloak/keycloak:26.7` | Proveedor de identidad: guarda contraseñas, hace el login y emite los tokens | `127.0.0.1:8080` |
-| `admin` | se construye con `services/admin/Dockerfile` (`node:24-alpine`) | La API REST: por ahora el único servicio, con clínicas y usuarios (RF1, RF2). Hasta la etapa 1 se llamaba `app` | `127.0.0.1:3000` |
+| `gateway` | `nginx:1.28-alpine` | La única entrada de la API: reparte cada ruta al servicio que le toca, según su prefijo (sección 8.4). Desde la etapa 5 | `127.0.0.1:3000` |
+| `admin` | se construye con `services/admin/Dockerfile` (`node:24-alpine`) | Clínicas y usuarios (RF1, RF2); después servicios y profesionales (RF3, RF4). Hasta la etapa 1 se llamaba `app` | ninguno |
+| `agenda` | `services/agenda/Dockerfile` | Horarios, bloqueos, disponibilidad, citas y reportes. Desde la etapa 5, todavía sin rutas | ninguno |
+| `clinical` | `services/clinical/Dockerfile` | Pacientes, notas clínicas y bitácora. Desde la etapa 5, todavía sin rutas | ninguno |
 | `redis` | `redis:8.2-alpine` | Caché de la consulta de disponibilidad | ninguno |
 
 El diagrama está en `docs/diagramas.md`, sección 1.
@@ -160,8 +163,9 @@ El diagrama está en `docs/diagramas.md`, sección 1.
 ### 2.2 El recorrido de una petición 🔴
 
 1. El cliente pide un **token** a Keycloak con usuario y contraseña, y recibe un JWT firmado (Parte 6).
-2. El cliente llama a la API con la cabecera `Authorization: Bearer <token>`.
-3. La API verifica la firma del token con las **llaves públicas** de Keycloak (JWKS): `authenticate`, en
+2. El cliente llama a la API con la cabecera `Authorization: Bearer <token>`. La petición entra por el **gateway**
+   (puerto 3000), que la reenvía al servicio que corresponde según el inicio de la ruta, sin mirar el token.
+3. El servicio verifica la firma del token con las **llaves públicas** de Keycloak (JWKS): `authenticate`, en
    `packages/common/src/auth.js`.
 4. La API busca el `sub` del token en la tabla `users` y obtiene la clínica y el rol (`identify`). Si el servicio
    no atiende ese rol, responde 403 ahí mismo (sección 3.5). Después abre una transacción, hace `SET LOCAL ROLE` al
@@ -192,7 +196,9 @@ Los pasos 1 a 4 ya funcionan; el 5 llega con la ruta de disponibilidad.
     el servicio aparecía "sano" con la base incompleta.
   - `keycloak`: su endpoint `/health/ready` responde `200 OK`.
   - `redis`: responde `PONG`.
-  - `admin`: `/health` responde.
+  - `admin`, `agenda` y `clinical`: su `/health` responde.
+  - `gateway`: `/health` responde a través de él (llega a `admin`). El gateway arranca cuando los tres servicios
+    están sanos.
 - **La inicialización corre una sola vez.** Postgres ejecuta `db/init/` solo cuando el volumen de datos está vacío,
   y Keycloak importa el realm solo si no existe. **Después de cambiar algo en `db/sql/` o en `keycloak/`, hay que
   recrear con `docker compose down -v`.**
@@ -217,7 +223,7 @@ El diseño completo, con el porqué de cada decisión, está en `docs/diseno-ser
 | 2 | Las tablas pasaron a los schemas `admin`, `agenda` y `clinical` (sección 4.2) | Hecha |
 | 3 | Un usuario de base por servicio, en lugar de `mc_app` (sección 3.5) | Hecha |
 | 4 | Traducir los errores `MC001`–`MC006` de los triggers a respuestas HTTP, y distinguir los `23P01` por la restricción que falló (sección 8.1) | Hecha |
-| 5 | Servicios `agenda` y `clinical`, y un gateway Nginx que reparte las rutas | Pendiente |
+| 5 | Servicios `agenda` y `clinical`, y un gateway Nginx que reparte las rutas (secciones 8.3 y 8.4) | Hecha |
 | 6 | Un solo comando de pruebas, `npm test` | Pendiente |
 
 **Qué es un workspace.** Un *workspace* de npm es un proyecto dentro de otro, en el mismo repositorio. La raíz
@@ -1595,11 +1601,15 @@ docker compose exec redis redis-cli DBSIZE                        # 0: todavía 
 
 ## Parte 8. La aplicación Node
 
-Desde la etapa 1, el código está en workspaces (sección 2.4). Hay un paquete compartido y un servicio:
+Desde la etapa 1, el código está en workspaces (sección 2.4). Desde la etapa 5 hay un paquete compartido, tres
+servicios y el gateway:
 
 ```
-packages/common/src/   auth.js, db.js, errors.js     ← los usan los tres servicios
-services/admin/src/    app.js, server.js, accounts.js, keycloak.js, routes/clinics.js, routes/users.js
+packages/common/src/      auth.js, db.js, errors.js     ← los usan los tres servicios
+services/admin/src/       app.js, server.js, accounts.js, keycloak.js, routes/clinics.js, routes/users.js
+services/agenda/src/      app.js, server.js             ← sin rutas todavía
+services/clinical/src/    app.js, server.js             ← sin rutas todavía
+gateway/nginx.conf        el reparto de rutas
 ```
 
 ### 8.1 El código compartido (`packages/common`) 🔴
@@ -1651,6 +1661,43 @@ services/admin/src/    app.js, server.js, accounts.js, keycloak.js, routes/clini
   - `USER node`: el proceso no corre como root.
 - **Siempre consultas parametrizadas** (`$1`, `$2`), nunca texto del usuario pegado al SQL: así no hay inyección
   SQL. La única excepción es `SET LOCAL ROLE`, que antes valida el rol contra una lista fija.
+
+### 8.3 Los servicios `agenda` y `clinical` 🟡
+
+Se crearon en la etapa 5 con la misma forma que `admin`: su `package.json`, su Dockerfile, `app.js` con `/health`
+y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no tienen rutas; llegan en el bloque B.
+
+- **Cada uno entra a la base con su propio usuario:** `mc_agenda_svc` y `mc_clinical_svc` (sección 3.5).
+- **Sus prefijos ya exigen token.** `agenda` protege `/schedules`, `/blockades`, `/availability`, `/appointments`,
+  `/agenda` y `/reports`; `clinical` protege `/patients`, `/clinical-notes` y `/audit`. Aunque no haya rutas:
+  - sin token → 401;
+  - con el token de la plataforma → 403 "Este servicio no atiende a su rol", sin consultar la base;
+  - con un usuario válido → 404, porque la ruta todavía no existe.
+- **Header `X-MediCitas-Service`.** Los tres servicios lo agregan con su nombre, para ver quién contestó detrás
+  del gateway.
+- **El `npm ci` de cada imagen** funciona aunque la imagen solo tenga el `package.json` de su propio servicio y no
+  el de los otros dos. Se comprobó al crearlos.
+
+### 8.4 El gateway 🔴
+
+El **gateway** es la única puerta de entrada de la API: un Nginx que escucha en el puerto 3000 y reenvía cada
+petición al servicio que corresponde, según el inicio de la ruta (`gateway/nginx.conf`). Nginx es un *proxy
+inverso*: no interpreta los datos ni consulta nada, solo reenvía bytes, así que agrega una fracción de milisegundo
+por petición.
+
+- **Solo enruta.** No valida tokens: lo hace cada servicio (**defensa en profundidad**). Si alguien llegara a un
+  servicio sin pasar por el gateway, igual lo rechazaría.
+- **El mismo archivo en Compose y en Kubernetes**, porque los servicios se llaman igual en los dos.
+- **`/me` y `/health` van a `admin`,** donde estaban antes, para no cambiar el contrato del README.
+- **Errores en JSON:** un prefijo desconocido responde 404 y un servicio caído 503, con `{ "error": ... }`. El 503
+  llega en unos 2 segundos (`proxy_connect_timeout 2s`); sin ese límite, Nginx esperaba hasta 60 s y el cliente
+  quedaba colgado. Mientras un servicio está caído, los otros siguen respondiendo.
+- **`keepalive`:** mantiene abiertas las conexiones hacia cada servicio en vez de abrir una por petición.
+- **Resuelve los nombres una sola vez, al arrancar.** En Compose, si se recrea un servicio y Docker le da otra
+  dirección, hay que reiniciar el gateway (`docker compose restart gateway`). En Kubernetes no hace falta, porque la
+  dirección de un Service es fija.
+  Se eligió así para no escribir en el archivo la dirección del DNS, que es distinta en cada entorno.
+- **Keycloak no pasa por el gateway:** si cambiara su dirección, cambiaría el `iss` de los tokens.
 
 ---
 
@@ -1705,7 +1752,7 @@ peticiones ✘ · video ✘ · `Uso_de_IA.md` actualizado ✘.
 **Requisitos del profesor fuera de la rúbrica:**
 - **Separación en servicios ◐:**
   - hechos los workspaces, los schemas y los usuarios por servicio;
-  - faltan `agenda`, `clinical` y el gateway.
+  - desde la etapa 5 existen `agenda`, `clinical` y el gateway, todavía sin las rutas de citas y pacientes.
 - **Kubernetes ✘.**
 - **Módulo del §9:** ✘ sin elegir.
 

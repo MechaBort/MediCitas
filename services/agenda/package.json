@@ -1,0 +1,15 @@
+{
+  "name": "@medicitas/agenda",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Servicio agenda de MediCitas: horarios, bloqueos, disponibilidad, citas y reportes (RF5–RF13, RF16, RF20, RF21)",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@medicitas/common": "*",
+    "express": "^5.3.0"
+  }
+}

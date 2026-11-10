@@ -10,6 +10,12 @@ export const app = express();
 
 app.use(express.json());
 
+// Nombre del servicio en cada respuesta, para saber quién contestó detrás del gateway.
+app.use((req, res, next) => {
+  res.set('X-MediCitas-Service', 'admin');
+  next();
+});
+
 app.get('/health', async (req, res) => {
   try {
     await pool.query('SELECT 1');

@@ -10,13 +10,18 @@ docker compose up --build
 
 | Servicio | URL | Notas |
 |---|---|---|
-| API | http://localhost:3000/health | Node 24 + Express 5 |
+| API (gateway) | http://localhost:3000/health | Nginx: la única entrada de la API. Reparte cada ruta, según su prefijo, a uno de los tres servicios Node 24 + Express 5 (`admin`, `agenda` y `clinical`), que no publican puertos. El header `X-MediCitas-Service` de cada respuesta dice qué servicio contestó |
 | Keycloak | http://localhost:8080 | Consola con `KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD` del `.env`; el realm `medicitas` se importa solo desde `keycloak/medicitas-realm.json` |
 | PostgreSQL | `localhost:5432`, base `medicitas` | Esquema, permisos, catálogos y datos de demostración se cargan solos desde `db/` |
 | Redis | solo dentro de la red de Compose | Caché de disponibilidad, sin persistencia. Inspeccionar con `docker compose exec redis redis-cli` |
 
 La base y el realm se inicializan solo cuando el volumen de datos está vacío. Después de cambiar algo en
 `db/sql/` o en `keycloak/`, recrear desde cero con `docker compose down -v`.
+
+El gateway busca la dirección de cada servicio una sola vez, al arrancar. Si se recrea solo un servicio (por
+ejemplo con `docker compose up --build agenda`) y sus rutas responden 503, reiniciar el gateway con
+`docker compose restart gateway`. Una pila que todavía tenga el contenedor viejo
+`medicitas-app-1` necesita `docker compose up --build --remove-orphans`.
 
 Diagramas de arquitectura y entidad-relación: [docs/diagramas.md](docs/diagramas.md).
 Diccionario de datos: [docs/diccionario-datos.md](docs/diccionario-datos.md). Se genera desde la base con

@@ -79,14 +79,91 @@ services:
       KEYCLOAK_USER_ADMIN_CLIENT_ID: medicitas-user-admin
       KEYCLOAK_USER_ADMIN_SECRET: ${KEYCLOAK_USER_ADMIN_SECRET:?Falta KEYCLOAK_USER_ADMIN_SECRET en .env}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env}@redis:6379
-    ports:
-      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    # Sin puerto publicado: se llega a través del gateway.
     depends_on:
       db:
         condition: service_healthy
       keycloak:
         condition: service_healthy
       redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  agenda:
+    build:
+      context: .
+      dockerfile: services/agenda/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: medicitas
+      PGUSER: mc_agenda_svc
+      PGPASSWORD: ${DB_AGENDA_SVC_PASSWORD:?Falta DB_AGENDA_SVC_PASSWORD en .env}
+      KEYCLOAK_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/medicitas
+      KEYCLOAK_AUDIENCE: medicitas-api
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/medicitas/protocol/openid-connect/certs
+      # Para la caché de disponibilidad (RF7), que llega en el bloque B.
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env}@redis:6379
+    depends_on:
+      db:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clinical:
+    build:
+      context: .
+      dockerfile: services/clinical/Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: medicitas
+      PGUSER: mc_clinical_svc
+      PGPASSWORD: ${DB_CLINICAL_SVC_PASSWORD:?Falta DB_CLINICAL_SVC_PASSWORD en .env}
+      KEYCLOAK_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/medicitas
+      KEYCLOAK_AUDIENCE: medicitas-api
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/medicitas/protocol/openid-connect/certs
+    depends_on:
+      db:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # La única puerta de entrada de la API: reparte por prefijo de ruta (gateway/nginx.conf).
+  # Keycloak conserva su propio puerto para no cambiar el iss de los tokens.
+  gateway:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
+    depends_on:
+      admin:
+        condition: service_healthy
+      agenda:
+        condition: service_healthy
+      clinical:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
