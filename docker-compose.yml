@@ -171,6 +171,21 @@ services:
       timeout: 5s
       retries: 5
 
+  # Pruebas unitarias y de integración (npm test) dentro de un contenedor: solo hace falta Docker.
+  # El profile hace que no arranque con "docker compose up"; se ejecuta con
+  # "docker compose --profile test run --rm tests", que levanta la pila si no está arriba.
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    environment:
+      API_URL: http://gateway:3000
+      KEYCLOAK_URL: http://keycloak:8080
+    depends_on:
+      gateway:
+        condition: service_healthy
+
   redis:
     image: redis:8.2-alpine
     restart: unless-stopped

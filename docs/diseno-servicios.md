@@ -404,7 +404,7 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
 
 ## 9. Pruebas
 
-> **Estrategia aprobada; el detalle se diseña al montar el arnés de pruebas.**
+> **Arnés montado en la etapa 6.** Ver "Decisiones de la etapa 6" al final de esta sección.
 
 - **Un solo comando.** `npm test`, desde la raíz, ejecuta las pruebas unitarias y las de integración. Las de
   integración corren contra la pila real de Compose, entrando por el gateway, como lo exige el enunciado.
@@ -417,6 +417,34 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   - **Invariantes:** al menos una prueba por cada invariante, de I1 a I8.
   - **Caché:** consultar, reservar y volver a consultar.
   - **Carga:** una medición frente a la meta de la sección 6.
+
+**Decisiones de la etapa 6: el arnés de pruebas.**
+- **Herramienta: `node:test`,** el ejecutor de pruebas que trae Node, con `assert` y el `fetch` también incluidos.
+  No agrega dependencias y entiende módulos ES sin configuración. Se descartaron Jest y Vitest: suman dependencias
+  y configuración para algo que Node 24 ya resuelve, y Jest todavía tiene fricciones con los módulos ES.
+- **Dos tipos de prueba.**
+  - **Unitarias**, junto al código que prueban (`packages/common/test/`), sin la pila: la traducción de errores de
+    la etapa 4, `parse` y la validación del rol de `withTransaction`.
+  - **De integración**, en `tests/integration/`, contra el gateway y con tokens reales de Keycloak. Las
+    utilidades comunes (pedir un token, llamar a la API, generar nombres únicos) están en `helpers.js`.
+- **Un comando, dos formas de ejecutarlo.**
+  - `npm test`, para el equipo. Requiere Node 24 y `npm ci`, y la pila arriba.
+  - `docker compose --profile test run --rm tests`, para el evaluador. Corre las mismas pruebas dentro de un
+    contenedor, así que solo necesita Docker, y levanta la pila si no está arriba. El *profile* hace que ese
+    servicio no arranque con un `docker compose up` normal.
+  - **Lo que se sacrifica:** un Dockerfile más que mantener (`tests/Dockerfile`), que copia los `package.json` de
+    los tres servicios por nombre. A cambio, la evaluación no depende de la versión de Node del evaluador.
+- **Direcciones configurables.** `API_URL` y `KEYCLOAK_URL`, por defecto `localhost:3000` y `localhost:8080`. Así
+  las mismas pruebas corren contra la pila local, contra una copia aislada o dentro del contenedor.
+- **Datos sin preparación manual.** Las pruebas leen los usuarios fijos del seed y del realm. Lo que crean lleva un
+  sufijo único por corrida, así que se pueden repetir; solo modifican lo que ellas mismas crearon.
+  - **Lo que se sacrifica:** no borran lo que crean, así que la base y Keycloak acumulan registros de prueba hasta
+    un `docker compose down -v`. Borrarlos exigiría operaciones de borrado que el dominio no tiene, porque la baja
+    de usuarios es lógica.
+- **Pila apagada.** Cada archivo de integración revisa primero `/health`; si no responde, falla con un mensaje que
+  dice cómo levantarla, en vez de mostrar decenas de errores de conexión.
+- **Trazabilidad.** El nombre de cada prueba empieza con los requisitos e invariantes que cubre (por ejemplo,
+  `RF2, RF17: recepción no gestiona usuarios`). La salida de `npm test` sirve así de base para el informe de pruebas que pide el enunciado.
 
 ---
 

@@ -224,7 +224,7 @@ El diseño completo, con el porqué de cada decisión, está en `docs/diseno-ser
 | 3 | Un usuario de base por servicio, en lugar de `mc_app` (sección 3.5) | Hecha |
 | 4 | Traducir los errores `MC001`–`MC006` de los triggers a respuestas HTTP, y distinguir los `23P01` por la restricción que falló (sección 8.1) | Hecha |
 | 5 | Servicios `agenda` y `clinical`, y un gateway Nginx que reparte las rutas (secciones 8.3 y 8.4) | Hecha |
-| 6 | Un solo comando de pruebas, `npm test` | Pendiente |
+| 6 | Un solo comando de pruebas, `npm test`, también ejecutable dentro de un contenedor (`docs/diseno-servicios.md`, sección 9) | Hecha |
 
 **Qué es un workspace.** Un *workspace* de npm es un proyecto dentro de otro, en el mismo repositorio. La raíz
 declara los suyos en `package.json` (`"workspaces": ["packages/*", "services/*"]`), y todos comparten un solo
@@ -1745,7 +1745,9 @@ por petición.
 | RF20 | Agenda del día | ✔ índices; permiso propuesto | ✘ |
 | RF21 | Conteo por estado | ✔ consulta (E23) | ✘ |
 
-**Otros entregables:** pruebas automatizadas (unitarias, integración, carrera, fugas, una por invariante) ✘ ·
+**Otros entregables:** pruebas automatizadas ◐: el arnés (`npm test`) y las pruebas de RF1, RF2, RF17, la
+traducción de errores, el gateway y la fuga en `/users` están hechas (etapa 6); faltan carrera, fugas del resto de
+recursos y una por invariante, que llegan con las rutas del bloque B ·
 `EXPLAIN ANALYZE` de los índices ✘ · contrato de rutas en el README ✘ · reporte de pruebas ✘ · colección de
 peticiones ✘ · video ✘ · `Uso_de_IA.md` actualizado ✘.
 
@@ -2030,6 +2032,11 @@ curl -s -X POST http://localhost:8080/realms/medicitas/protocol/openid-connect/t
 
 # Diccionario de datos
 ./db/tools/generar-diccionario.sh
+
+# Pruebas (unitarias y de integración)
+npm test                                     # desde tu máquina: Node 24, npm ci y la pila arriba
+npm run test:unit                            # solo las unitarias, sin la pila
+docker compose --profile test run --rm tests # dentro de un contenedor: solo hace falta Docker
 ```
 
 ---

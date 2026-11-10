@@ -10,5 +10,10 @@
   "workspaces": [
     "packages/*",
     "services/*"
-  ]
+  ],
+  "scripts": {
+    "test": "node --test --test-reporter=spec \"packages/*/test/**/*.test.js\" \"services/*/test/**/*.test.js\" \"tests/**/*.test.js\"",
+    "test:unit": "node --test --test-reporter=spec \"packages/*/test/**/*.test.js\" \"services/*/test/**/*.test.js\"",
+    "test:integration": "node --test --test-reporter=spec \"tests/**/*.test.js\""
+  }
 }

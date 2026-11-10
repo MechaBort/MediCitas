@@ -59,6 +59,34 @@ unas 4 000 citas en todos los estados, con notas clínicas y bitácora. Es deter
 así que dos personas que levanten el proyecto el mismo día obtienen los mismos datos. Incluye a propósito
 4 citas en conflicto con un bloqueo registrado después de reservarlas (RF6) y una reprogramación por clínica (RF10).
 
+## Pruebas
+
+Un solo comando ejecuta las pruebas unitarias y las de integración. Las de integración corren contra la pila real,
+entrando por el gateway y con tokens reales de Keycloak. No hace falta preparar datos.
+
+```bash
+docker compose --profile test run --rm tests
+```
+
+Solo necesita Docker: levanta la pila si no está arriba, y corre las pruebas dentro de un contenedor. Termina con
+código 0 si todas pasan.
+
+Con Node 24 instalado, las mismas pruebas corren desde la máquina, con la pila arriba:
+
+```bash
+npm ci
+npm test                 # todas
+npm run test:unit        # solo las unitarias, sin la pila
+npm run test:integration # solo las de integración
+```
+
+- `API_URL` y `KEYCLOAK_URL` cambian las direcciones (por defecto `http://localhost:3000` y
+  `http://localhost:8080`).
+- El nombre de cada prueba empieza con los requisitos e invariantes que cubre, por ejemplo
+  `I5: un usuario de otra clínica responde 404…`.
+- Las pruebas usan los usuarios fijos del seed y crean clínicas y usuarios con nombres únicos, sin modificar los
+  del seed. Lo que crean queda en la base y en Keycloak hasta un `docker compose down -v`.
+
 ## Diseño de la base de datos (PostgreSQL)
 
 ### Convenciones
