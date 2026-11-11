@@ -1015,7 +1015,8 @@ nivel de aislamiento") explica por qué se descartaron `SERIALIZABLE` y `SELECT 
   espacio) y se inserta la nueva con `rescheduled_from_id`. Si el `INSERT` falla, el `ROLLBACK` deja la original
   intacta. `UNIQUE (rescheduled_from_id)` impide reprogramar dos veces la misma cita.
 - **Deadlock:** dos reprogramaciones que se cruzan (A se mueve al espacio de B y B al de A) pueden bloquearse
-  mutuamente. Postgres lo detecta y aborta una con `40P01`; la API deberá reintentar o responder 409.
+  mutuamente. Postgres lo detecta y aborta una con `40P01`; `withTransaction` la repite y las dos terminan en
+  409. El detalle está en la sección 8.3.
 
 #### Experimentos
 
@@ -1731,6 +1732,40 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   ya empezó (para RF12) se prepara en la base con `addAppointment` en un día del pasado lejano (`freePastDay`),
   porque la API no permite reservar en el pasado. Los triggers igual corren sobre ese `INSERT`.
 
+**Reprogramar (RF10), también en la rama `reservas`** 🔴
+
+- **`POST /appointments/{id}/reschedule`,** con el permiso `appointments.manage`. Recibe el nuevo inicio y,
+  opcionalmente, otro profesional que atienda el mismo servicio. El paciente, el servicio y la descripción se
+  conservan.
+- **Una sola transacción, en este orden:**
+  1. `UPDATE` de la original a `reprogramada`. Si ya estaba en un estado final, el trigger responde `MC002` (409);
+     si no existe o es de otra clínica, 404 (I5). Al salir de `reservada`, deja de ocupar su espacio (I7).
+  2. `INSERT` de la nueva con `rescheduled_from_id`, por la misma función que la reserva (`insertAppointment`), así
+     que pasa por las mismas revisiones: I3, I4 y las `EXCLUDE` de I1 e I2.
+
+  Si el paso 2 falla, el `ROLLBACK` deshace también el paso 1 y la original sigue reservada. En ningún momento
+  quedan las dos citas ocupando espacio, ni ninguna.
+- **Por qué primero el `UPDATE`.** Si la nueva se insertara antes, chocaría con la original en las dos `EXCLUDE`
+  cada vez que se cruzaran, porque son el mismo paciente y, normalmente, el mismo profesional. Así, correr una cita
+  quince minutos no se podría. Una prueba lo comprueba.
+- **Dos reprogramaciones de la misma cita a la vez.** El primer `UPDATE` bloquea la fila. El segundo espera y, cuando
+  el primero confirma, vuelve a leerla, la ve `reprogramada` y el trigger lo rechaza con `MC002`. Resultado: un 201 y
+  un 409, y una sola cita nueva.
+- **Reprogramaciones cruzadas: el deadlock.** A se mueve al espacio de B y B al de A, al mismo tiempo. Cada
+  transacción ya cambió su original y, al insertar la nueva, la `EXCLUDE` encuentra la original de la otra todavía
+  sin confirmar. Entonces espera a que la otra termine. Las dos se esperan entre sí: es un **deadlock**, un bloqueo
+  circular en el que ninguna puede avanzar. PostgreSQL lo detecta al segundo (`deadlock_timeout`) y aborta una con
+  `40P01`, y `withTransaction` la repite.
+  - Ninguna puede ganar, porque cada una necesita el espacio que la otra sigue ocupando: las dos responden 409 y las
+    dos originales quedan reservadas. Un intercambio de espacios se hace en dos pasos, pasando una cita por un espacio
+    libre.
+  - **La prueba discrimina.** Se comprobó en una copia aislada con el reintento apagado (`MAX_ATTEMPTS = 1`, solo
+    dentro del contenedor): la transacción abortada respondió 500 "Error interno". Con el reintento, siempre 409.
+  - Los registros lo confirman: PostgreSQL anota `deadlock detected ... while checking exclusion constraint`, y
+    `agenda`, "Deadlock detectado; reintento 2 de 3".
+- **Después del COMMIT se suben dos versiones de agenda:** la del día que se libera y la del día que se ocupa, que
+  pueden ser de dos profesionales distintos (I8).
+
 ### 8.4 El gateway 🔴
 
 El **gateway** es la única puerta de entrada de la API: un Nginx que escucha en el puerto 3000 y reenvía cada
@@ -1785,7 +1820,7 @@ por petición.
 | RF7 | Espacios disponibles de un profesional | ◐ índices listos; falta el cálculo | ✘ (+ caché) |
 | RF8 | Disponibilidad por servicio en un rango | ◐ índice listo | ✘ |
 | RF9 | Reservar | ✔ `EXCLUDE` y triggers | ✔ `POST /appointments` (servicio `agenda`), con la prueba de carrera (sección 8.3) |
-| RF10 | Reprogramar | ✔ `rescheduled_from_id`; probado en el seed | ✘ |
+| RF10 | Reprogramar | ✔ `rescheduled_from_id`; probado en el seed | ✔ `POST /appointments/{id}/reschedule`, con pruebas de carrera y de deadlock |
 | RF11 | Cancelar con motivo | ✔ `ck_appointments_cancellation` | ✔ `POST /appointments/{id}/cancel`, con pruebas |
 | RF12 | Desenlace después del inicio | ✔ trigger (`MC003`) | ✔ `POST /appointments/{id}/outcome`, con pruebas |
 | RF13 | Transiciones de estado | ✔ trigger (`MC002`) | ✔ las dos rutas anteriores traducen `MC002` a 409, con pruebas |

@@ -623,6 +623,9 @@ Deadlock: puede ocurrir si dos reprogramaciones cruzan espacios (A se mueve al e
 lo detecta y aborta una con `40P01`. `withTransaction` repite la transacción abortada completa, hasta 3
 intentos; para la otra transacción el deadlock no existe. Como la transacción puede repetirse, dentro de ella
 solo va trabajo sobre la base: lo externo, como invalidar la caché de Redis, se hace después del COMMIT.
+En ese cruce ninguna de las dos puede ganar, porque cada una necesita el espacio que la otra sigue ocupando: las
+dos responden 409 y las dos citas originales quedan reservadas. Lo comprueba una prueba automatizada
+(`tests/integration/appointment-reschedule.test.js`); sin el reintento, la transacción abortada respondía 500.
 
 I7: como el `EXCLUDE` solo considera las citas `reservada`, al confirmar una cancelación o reprogramación el
 espacio queda libre para la siguiente consulta.
@@ -909,3 +912,27 @@ Permiso `appointments.outcome` (administrador de clínica, recepción y profesio
 | 400 | Body inválido (falta el motivo, desenlace distinto de `atendida` o `ausente`) o id que no es un número |
 | 404 | La cita no existe o es de otra clínica (I5) |
 | 409 | La cita ya está en un estado final (RF13), o se registra el desenlace antes de la hora de inicio (RF12) |
+
+### `POST /appointments/{id}/reschedule` (RF10)
+Permiso `appointments.manage` (administrador de clínica y recepción). Mueve una cita reservada a otro espacio:
+```json
+{
+  "start": "2026-11-12T10:00:00-06:00",
+  "professionalId": 7
+}
+```
+- `start`: el nuevo inicio, con zona horaria. El fin lo sigue calculando la base (I4).
+- `professionalId` es opcional: otro profesional de la clínica que atienda el mismo servicio. Si no se envía, se
+  conserva el profesional. El paciente, el servicio y la descripción siempre se conservan.
+- En una sola transacción, la original pasa a `reprogramada` y se crea la nueva, que apunta a ella
+  (`rescheduledFromId`). Si la nueva no se puede crear, la original sigue `reservada`: nunca quedan las dos ni
+  ninguna. Como la original libera su espacio primero, la nueva puede cruzarse con ella (por ejemplo, correrla
+  quince minutos).
+- Dos reprogramaciones simultáneas de la misma cita: gana una y la otra recibe 409.
+
+| Código | Caso |
+|---|---|
+| 201 | Reprogramada. Devuelve la cita nueva, `{appointmentId, patientId, professionalId, serviceId, status: "reservada", start, end, description, rescheduledFromId}`, y el header `Location` |
+| 400 | Body inválido (sin `start`, inicio sin zona horaria, un campo que no se admite como `end` o `serviceId`), id que no es un número, inicio en el pasado, el profesional no atiende ese servicio, o el nuevo espacio cae fuera del horario o dentro de un bloqueo (I3) |
+| 404 | La cita, o el profesional indicado, no existe o es de otra clínica (I5) |
+| 409 | La cita ya está en un estado final, por ejemplo ya reprogramada o cancelada (RF13); o el nuevo espacio está tomado (I1, I2) |

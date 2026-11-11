@@ -70,8 +70,20 @@ disponibilidad, citas y reportes.
 - **Alternativa descartada.** Un `PATCH /appointments/{id}` con `{ status }`: la ruta tendría que elegir el permiso
   según el cuerpo, y un error ahí dejaría a un profesional cancelar. Tampoco se revisa el estado antes del `UPDATE`,
   porque entre la lectura y la escritura otra petición podría cambiarlo.
-- **Lo que se sacrifica.** Un contrato menos "REST puro": son verbos sobre el recurso. Se propone que RF10 (reprogramar)
-  siga la misma forma, con `POST /appointments/{id}/reschedule`.
+- **Lo que se sacrifica.** Un contrato menos "REST puro": son verbos sobre el recurso. RF10 (reprogramar) sigue la misma
+  forma, con `POST /appointments/{id}/reschedule`.
+
+**Decisión de la rama `reservas`: la reprogramación reutiliza la reserva y admite cambiar de profesional (RF10).**
+- **Problema.** La cita nueva de una reprogramación necesita exactamente las mismas revisiones que una reserva.
+  Además, RF10 habla de mover la cita "hacia otro espacio", y RF8 devuelve espacios de varios profesionales para un
+  mismo servicio.
+- **Elegido.** Las revisiones y el `INSERT` de la reserva pasaron a una función, `insertAppointment`, que usan las
+  dos rutas. La reprogramación recibe el nuevo inicio y, opcionalmente, otro profesional que atienda el mismo
+  servicio. El paciente y el servicio no cambian.
+- **Alternativas descartadas.** Copiar las revisiones en la ruta de reprogramar (una corrección futura quedaría en
+  un solo lado). Permitir cambiar el servicio: sería otra cita, con otra duración, y no una reprogramación.
+- **Lo que se sacrifica.** La ruta de RF9 cambió de forma, aunque no de comportamiento: sus 13 pruebas pasan sin
+  cambios.
 
 ---
 
