@@ -182,6 +182,8 @@ services:
     environment:
       API_URL: http://gateway:3000
       KEYCLOAK_URL: http://keycloak:8080
+      # Conexión directa como mc_owner, solo para preparar datos y verificar (tests/integration/db.js).
+      TEST_DATABASE_URL: postgres://mc_owner:${DB_OWNER_PASSWORD:?Falta DB_OWNER_PASSWORD en .env}@db:5432/medicitas
     depends_on:
       gateway:
         condition: service_healthy

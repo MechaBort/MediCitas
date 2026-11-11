@@ -2,9 +2,10 @@ import express from 'express';
 import { pool } from '@medicitas/common/db';
 import { authenticate, identify } from '@medicitas/common/auth';
 import { toResponse } from '@medicitas/common/errors';
+import { appointmentsRouter } from './routes/appointments.js';
 
 // Servicio agenda: horarios, bloqueos, disponibilidad, citas y reportes (RF5–RF13, RF16, RF20,
-// RF21). Todavía no tiene rutas propias: llegan en el bloque B.
+// RF21). Cada tema tiene su archivo en routes/; los demás llegan en el bloque B.
 // La app se exporta sin escuchar en un puerto para poder probarla con supertest.
 export const app = express();
 
@@ -30,6 +31,9 @@ app.get('/health', async (req, res) => {
 // con un rol que este servicio no atiende 403, y con un usuario válido 404.
 const protect = [authenticate, identify];
 app.use(['/schedules', '/blockades', '/availability', '/appointments', '/agenda', '/reports'], protect);
+
+// Cada router pide con requirePermission el permiso específico de cada ruta.
+app.use('/appointments', appointmentsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Ruta no encontrada' });

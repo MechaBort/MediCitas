@@ -81,11 +81,16 @@ npm run test:integration # solo las de integración
 ```
 
 - `API_URL` y `KEYCLOAK_URL` cambian las direcciones (por defecto `http://localhost:3000` y
-  `http://localhost:8080`).
+  `http://localhost:8080`). `TEST_DATABASE_URL` es la conexión directa a la base como `mc_owner` (por defecto
+  `postgres://mc_owner:mc_owner_dev@localhost:5432/medicitas`), que algunas pruebas usan solo para preparar datos y
+  verificar el resultado; lo que se prueba siempre pasa por la API.
 - El nombre de cada prueba empieza con los requisitos e invariantes que cubre, por ejemplo
   `I5: un usuario de otra clínica responde 404…`.
-- Las pruebas usan los usuarios fijos del seed y crean clínicas y usuarios con nombres únicos, sin modificar los
-  del seed. Lo que crean queda en la base y en Keycloak hasta un `docker compose down -v`.
+- Las pruebas usan los usuarios fijos del seed y crean clínicas, usuarios, horarios y citas con nombres o fechas
+  únicas, sin modificar los del seed. Lo que crean queda en la base y en Keycloak hasta un `docker compose down -v`.
+- La prueba de carrera (pregunta rectora) está en `tests/integration/appointments.test.js`: dos recepcionistas, y
+  después diez clientes, reservan a la vez el último espacio de un profesional, y siempre se concede exactamente
+  una reserva.
 
 ## Diseño de la base de datos (PostgreSQL)
 
@@ -859,3 +864,27 @@ Permiso `users.manage`. Body con uno o ambos campos: `{"role": "clinic_admin" | 
 | 404 | El usuario no existe en la clínica del token |
 | 409 | Es el propio usuario (no puede quitarse el rol ni darse de baja), o es un profesional y se pidió cambiar su rol |
 | 502 | Se guardó en la base pero no en Keycloak; el usuario queda sin acceso hasta repetir la petición |
+
+### `POST /appointments` (RF9)
+Permiso `appointments.manage` (administrador de clínica y recepción). Reserva una cita en la clínica del token.
+```json
+{
+  "patientId": 1,
+  "professionalId": 6,
+  "serviceId": 1,
+  "start": "2026-11-12T09:00:00-06:00",
+  "description": "Control"
+}
+```
+- `start`: instante de inicio con zona horaria (`-06:00` o `Z`). Uno sin zona se rechaza, porque sería ambiguo.
+- El fin no se envía: lo calcula la base con la duración del servicio (I4). Un campo `end` se rechaza con 400.
+- `description` es opcional (hasta 500 caracteres).
+- Dos reservas simultáneas del mismo espacio: la base deja pasar exactamente una; la otra recibe 409 (pregunta
+  rectora, I1).
+
+| Código | Caso |
+|---|---|
+| 201 | Concedida. Devuelve `{appointmentId, patientId, professionalId, serviceId, status: "reservada", start, end, description}` y el header `Location` |
+| 400 | Solicitud inválida: body inválido, inicio en el pasado, el profesional no atiende ese servicio, o la cita cae fuera de su horario o dentro de un bloqueo (I3) |
+| 404 | El paciente, el profesional o el servicio no existe, está dado de baja o es de otra clínica (I5) |
+| 409 | Espacio ya tomado: el profesional ya tiene una cita que se cruza (I1); o el paciente ya tiene otra cita a esa hora (I2) |

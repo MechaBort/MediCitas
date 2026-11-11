@@ -1678,6 +1678,31 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
 - **El `npm ci` de cada imagen** funciona aunque la imagen solo tenga el `package.json` de su propio servicio y no
   el de los otros dos. Se comprobó al crearlos.
 
+**La reserva (RF9), en `agenda` desde la rama `reservas`** 🔴
+
+- **`routes/appointments.js`: `POST /appointments`,** con el permiso `appointments.manage`. Hace todo en una sola
+  transacción:
+  1. Una sola consulta revisa que el paciente, el profesional y el servicio existan, estén activos y sean de la
+     clínica del token (si no, 404, I5), que el profesional atienda ese servicio y que el inicio sea futuro (si no,
+     400).
+  2. El `INSERT` manda el periodo con el fin vacío, `tstzrange(inicio, NULL)`. La base hace el resto: el trigger
+     calcula el fin con la duración del servicio (I4), otro revisa el horario y los bloqueos (I3, `MC001` → 400), y
+     las restricciones `EXCLUDE` deciden si el espacio sigue libre (I1, I2, `23P01` → 409).
+  3. Después del COMMIT, sube la versión de la agenda de ese día en Redis.
+- **`agenda-version.js`: `bumpAgendaVersion({ clinicId, professionalId, firstDay, lastDay })`.** Sube la clave
+  `ver:{clínica}:{profesional}:{fecha}` de cada día del periodo (Parte 7). La llaman todas las rutas que cambian una
+  agenda, también las de horarios y bloqueos de Simso, siempre después del COMMIT. Si Redis no responde, la
+  reserva igual se confirma, porque la base es la fuente de verdad.
+- **La prueba de carrera (`tests/integration/appointments.test.js`).** Cada ronda crea un bloque de horario del
+  tamaño exacto de un servicio, es decir, un "último espacio", y lanza a la vez dos reservas de dos recepcionistas
+  distintas. Siempre sale un 201 y un 409, y en la base queda una sola cita. Se repite cinco rondas, y una más con
+  diez clientes a la vez.
+- **La prueba discrimina.** Se comprobó quitando la restricción `ex_appointments_professional` en una copia aislada:
+  sin ella, la API concedió las dos reservas (`[201, 201]`) y, con diez clientes, las diez. Con ella, siempre una.
+- **Cómo preparan sus datos las pruebas.** Como la ruta de horarios (RF5) todavía no existe, `tests/integration/db.js`
+  se conecta como `mc_owner` solo para crear el bloque de horario en un día lejano y único, y para contar las citas.
+  La reserva en sí siempre pasa por la API.
+
 ### 8.4 El gateway 🔴
 
 El **gateway** es la única puerta de entrada de la API: un Nginx que escucha en el puerto 3000 y reenvía cada
@@ -1731,7 +1756,7 @@ por petición.
 | RF6 | Bloqueos y conflictos | ✔ `blockades`; conflictos consultables (E25) | ✘ |
 | RF7 | Espacios disponibles de un profesional | ◐ índices listos; falta el cálculo | ✘ (+ caché) |
 | RF8 | Disponibilidad por servicio en un rango | ◐ índice listo | ✘ |
-| RF9 | Reservar | ✔ `EXCLUDE` y triggers | ✘ |
+| RF9 | Reservar | ✔ `EXCLUDE` y triggers | ✔ `POST /appointments` (servicio `agenda`), con la prueba de carrera (sección 8.3) |
 | RF10 | Reprogramar | ✔ `rescheduled_from_id`; probado en el seed | ✘ |
 | RF11 | Cancelar con motivo | ✔ `ck_appointments_cancellation` | ✘ |
 | RF12 | Desenlace después del inicio | ✔ trigger (`MC003`) | ✘ |

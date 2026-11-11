@@ -400,6 +400,19 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
 - Redis usa la política `volatile-lru`;
 - si Redis falla, se consulta PostgreSQL.
 
+**Decisión de la rama `reservas`: la función que sube la versión llega antes que la caché.**
+- **Problema.** La caché se lee en RF7, que llega después, pero las rutas que cambian una agenda empiezan a
+  existir antes: la reserva (Emmanuel) y los horarios y bloqueos (Simso). Si cada ruta escribiera su propio
+  `INCR`, la regla quedaría repartida y alguna lo olvidaría.
+- **Elegido.** Una sola función, `bumpAgendaVersion({ clinicId, professionalId, firstDay, lastDay })`, en
+  `services/agenda/src/agenda-version.js`. Sube `ver:{clínica}:{profesional}:{fecha}` de cada día del periodo, con
+  las fechas en la hora local de la clínica. Toda ruta que cambia una agenda la llama después del COMMIT y antes de
+  responder.
+- **Si Redis no responde,** el cambio ya está confirmado en la base, que es la fuente de verdad: se registra el error
+  y la petición responde normalmente. El cliente usa `disableOfflineQueue`, así que un comando sin conexión falla
+  en milisegundos en vez de quedar esperando. Qué pasa con las copias viejas en ese caso se decide en la etapa de la
+  caché.
+
 ---
 
 ## 9. Pruebas
@@ -444,7 +457,23 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
 - **Pila apagada.** Cada archivo de integración revisa primero `/health`; si no responde, falla con un mensaje que
   dice cómo levantarla, en vez de mostrar decenas de errores de conexión.
 - **Trazabilidad.** El nombre de cada prueba empieza con los requisitos e invariantes que cubre (por ejemplo,
-  `RF2, RF17: recepción no gestiona usuarios`). La salida de `npm test` sirve así de base para el informe de pruebas que pide el enunciado.
+  `RF2, RF17: recepción no gestiona usuarios`).
+
+**Decisión de la rama `reservas`: las pruebas preparan y verifican datos con una conexión directa a la base.**
+- **Problema.** La prueba de carrera necesita un "último espacio" controlado: un bloque de horario del tamaño exacto
+  de un servicio. La ruta para crear horarios (RF5) todavía no existe, y aunque existiera, el enunciado pide
+  comprobar que quedó **una sola fila en la base**, algo que la API no expone.
+- **Elegido.** `tests/integration/db.js` abre una conexión como `mc_owner` (`TEST_DATABASE_URL`) solo para
+  **preparar** (crear un bloque de horario o un bloqueo en un día lejano y único por prueba) y para **verificar**
+  (contar las citas reservadas). La operación que se prueba, la reserva, siempre pasa por la API.
+- **Por qué se queda aunque llegue RF5.** Con RF5, los horarios podrán crearse por la API, pero la verificación en la
+  base y la prueba del módulo del §9 (alterar la bitácora como dueño) siguen necesitando esta conexión.
+- **Alternativa descartada.** Esperar la ruta de RF5: habría bloqueado la prueba de carrera, que nunca se recorta.
+- **Lo que se sacrifica.** Las pruebas necesitan la contraseña del dueño de las tablas (solo de desarrollo) y
+  conocen la estructura de algunas tablas.
+- **La prueba de carrera discrimina.** Se verificó quitando la restricción `ex_appointments_professional` en una
+  copia aislada: con ella, siempre hay una sola reserva; sin ella, la API concedió las dos (`[201, 201]`) y, con diez
+  clientes, las diez. La prueba falla si se quita lo que garantiza I1. La salida de `npm test` sirve así de base para el informe de pruebas que pide el enunciado.
 
 ---
 
