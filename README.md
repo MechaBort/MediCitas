@@ -91,6 +91,31 @@ npm run test:integration # solo las de integración
 - La prueba de carrera (pregunta rectora) está en `tests/integration/appointments.test.js`: dos recepcionistas, y
   después diez clientes, reservan a la vez el último espacio de un profesional, y siempre se concede exactamente
   una reserva.
+- Las pruebas de I7 e I8 están en `tests/integration/availability.test.js`: consultan los espacios de un día,
+  reservan, cancelan o reprograman uno de los espacios devueltos, y vuelven a consultar. La siguiente consulta tiene
+  que reflejar el cambio.
+
+### Medición de carga de RF7
+
+`tests/load/availability.js` mide la consulta de disponibilidad (RF7) con [k6](https://k6.io), una herramienta de
+pruebas de carga que corre en Docker, sin instalar nada. Con la pila arriba:
+
+```bash
+docker run --rm -i --network medicitas_default grafana/k6:1.3.0 run - < tests/load/availability.js
+```
+
+Durante 30 segundos, 50 usuarios simultáneos consultan sin pausas los espacios de un profesional en un día al azar
+de las próximas dos semanas del seed, siempre a través del gateway y con un token real. Se mide cuántas consultas
+por segundo se atienden y el **p95**, el tiempo dentro del cual responde el 95 % de las consultas.
+
+| Medición | Consultas por segundo | p95 | Errores |
+|---|---|---|---|
+| Sin caché (2026-11-11) | ~716 | 111 ms | 0 de 21 584 |
+| Con la caché de RF7 | pendiente | | |
+
+Todo corre en la misma máquina (16 hilos, Docker Desktop), con una sola copia de `agenda`, incluso k6. Durante la
+medición sin caché, `agenda` usó ~110 % de CPU, el núcleo completo que aprovecha un proceso de Node, y PostgreSQL
+~270 %. Las cifras solo sirven para comparar entre sí mediciones hechas en la misma máquina.
 
 ## Diseño de la base de datos (PostgreSQL)
 
@@ -936,3 +961,56 @@ Permiso `appointments.manage` (administrador de clínica y recepción). Mueve un
 | 400 | Body inválido (sin `start`, inicio sin zona horaria, un campo que no se admite como `end` o `serviceId`), id que no es un número, inicio en el pasado, el profesional no atiende ese servicio, o el nuevo espacio cae fuera del horario o dentro de un bloqueo (I3) |
 | 404 | La cita, o el profesional indicado, no existe o es de otra clínica (I5) |
 | 409 | La cita ya está en un estado final, por ejemplo ya reprogramada o cancelada (RF13); o el nuevo espacio está tomado (I1, I2) |
+
+### Disponibilidad (RF7, RF8)
+Permiso `availability.read` (administrador de clínica, recepción y profesional). Solo lectura. Un espacio libre sale
+del horario del profesional (RF5), menos sus bloqueos (RF6) y menos sus citas `reservada`; una cita cancelada o
+reprogramada ya no ocupa su espacio (I7). Los huecos libres se cortan en espacios seguidos del largo del servicio,
+desde el inicio de cada hueco; lo que sobra al final de un hueco no alcanza para un espacio. Los espacios que ya
+empezaron no se devuelven.
+
+Las fechas (`date`, `from`, `to`) son días `YYYY-MM-DD` en la hora local de la clínica. Cada espacio es
+`{start, end}`, dos instantes ISO 8601 en UTC, en el mismo formato que la reserva: el `start` de un espacio se puede
+mandar tal cual a `POST /appointments`.
+
+#### `GET /availability/professionals/{professionalId}?serviceId=…&date=…` (RF7)
+Espacios libres de un profesional en una fecha, para uno de sus servicios.
+```json
+{
+  "professionalId": 6,
+  "serviceId": 2,
+  "date": "2026-11-12",
+  "durationMinutes": 30,
+  "slots": [
+    { "start": "2026-11-12T14:30:00.000Z", "end": "2026-11-12T15:00:00.000Z" },
+    { "start": "2026-11-12T16:00:00.000Z", "end": "2026-11-12T16:30:00.000Z" }
+  ]
+}
+```
+Un día sin horario, ya pasado o completamente ocupado responde 200 con `slots: []`.
+
+#### `GET /availability/services/{serviceId}?from=…&to=…` (RF8)
+Profesionales que atienden el servicio y tienen al menos un espacio entre `from` y `to` (inclusive, como máximo 31
+días), con los días que tienen espacios. Cada día trae los mismos espacios que daría RF7. Un profesional sin
+espacios en el rango no aparece.
+```json
+{
+  "serviceId": 2,
+  "from": "2026-11-12",
+  "to": "2026-11-18",
+  "durationMinutes": 30,
+  "professionals": [
+    {
+      "professionalId": 6,
+      "name": "Laura Mora Jiménez",
+      "days": [{ "date": "2026-11-12", "slots": [{ "start": "…", "end": "…" }] }]
+    }
+  ]
+}
+```
+
+| Código | Caso |
+|---|---|
+| 200 | Devuelve los espacios, aunque la lista esté vacía |
+| 400 | Parámetros inválidos (falta uno, fecha imposible como `2030-02-30`, id que no es un número, un parámetro que no se admite como `clinicId`), el profesional no atiende ese servicio (RF7), o en RF8 un rango al revés o de más de 31 días |
+| 404 | El profesional o el servicio no existe, está dado de baja o es de otra clínica (I5) |

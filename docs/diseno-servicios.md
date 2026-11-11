@@ -379,7 +379,11 @@ transacción.
   *sharding*. El modelo ya está preparado: todas las tablas tienen `clinic_id`, y las llaves compuestas lo
   incluyen.
 
-Las cifras de la tabla miden solo la base. La medición de punta a punta, antes y después de la caché, está
+Las cifras de la tabla miden solo la base. La medición de punta a punta de RF7 (gateway, `agenda` y base, con k6)
+está en el README, sección "Medición de carga de RF7". Sin caché y con una sola copia de `agenda`, se atienden unas
+716 consultas por segundo, con un p95 de 111 ms. El límite es `agenda`: un proceso de Node aprovecha un solo núcleo,
+y llegó a ~110 % de CPU mientras PostgreSQL usaba ~270 %. Por eso la meta de 3 300 por segundo no depende solo de la
+caché, sino también de tener varias copias de `agenda` (el HPA de Kubernetes). La medición con caché está
 pendiente.
 
 ---
@@ -439,6 +443,38 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   y la petición responde normalmente. El cliente usa `disableOfflineQueue`, así que un comando sin conexión falla
   en milisegundos en vez de quedar esperando. Qué pasa con las copias viejas en ese caso se decide en la etapa de la
   caché.
+
+**Decisión de la rama `reservas`: la base calcula los huecos y el servicio los corta en espacios (RF7, RF8).**
+- **Problema.** RF7 es la consulta más frecuente del sistema y la que va a usar la caché. Hay que decidir dónde se
+  hace cada parte del cálculo, y qué unidad se guarda en la caché.
+- **Elegido.** Dos pasos.
+  - **En la base, una sola consulta** (`services/agenda/src/availability.js`) devuelve los huecos libres de cada
+    profesional y día: el horario, menos los bloqueos y menos las citas reservadas, restados como rangos múltiples
+    (`range_agg` y la resta de `tstzmultirange`). Empieza por los horarios, así que un día sin horario no cuesta
+    nada. Usa los índices GiST que ya existían: el del `EXCLUDE` de horarios, el de bloqueos y el del `EXCLUDE` de
+    citas reservadas.
+  - **En el servicio, una función pura** (`services/agenda/src/slots.js`) corta esos huecos en espacios seguidos
+    del largo del servicio, desde el inicio de cada hueco, y descarta los que ya empezaron.
+  - La unidad es (profesional, día local de la clínica), la misma que la versión de agenda. La caché va a guardar
+    los huecos de cada par una sola vez, y cada servicio los corta con su propia duración. RF8 usa la misma
+    función para todos los profesionales del servicio y todos los días del rango.
+- **Alternativas descartadas.**
+  - Cortar en SQL con `generate_series`: la caché tendría que guardar una copia por profesional, día **y
+    servicio**, y una reserva tendría que invalidarlas todas.
+  - Traer horarios, bloqueos y citas al servicio y restarlos en JavaScript: viajarían más filas por la red y habría
+    que reimplementar la aritmética de rangos, que PostgreSQL ya hace bien.
+  - Una grilla fija (por ejemplo, cada 15 minutos): da más opciones, pero deja huecos inútiles entre citas.
+- **Lo que se sacrifica.** Los espacios se alinean al inicio de cada hueco. Si una cita de 20 minutos queda en
+  medio de una mañana con espacios de 30, los espacios que siguen se corren 20 minutos.
+
+**Decisión: RF8 acepta como máximo 31 días.**
+- **Problema.** El costo de RF8 crece con los profesionales por los días. Sin tope, una sola petición de un año
+  para un servicio con diez profesionales (unos 2 500 días con horario) costaría lo que cientos de peticiones
+  normales. Además, en la etapa de la caché llenaría Redis con entradas que nadie vuelve a leer.
+- **Elegido.** Un rango de más de 31 días responde 400. Alcanza para consultar un mes completo.
+- **Alternativas descartadas.** No poner tope. Paginar la respuesta, que protege igual, pero agrega código y es más
+  difícil de explicar.
+- **Lo que se sacrifica.** Para ver más de un mes, el cliente hace varias consultas.
 
 ---
 

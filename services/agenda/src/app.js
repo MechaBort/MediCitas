@@ -3,6 +3,7 @@ import { pool } from '@medicitas/common/db';
 import { authenticate, identify } from '@medicitas/common/auth';
 import { toResponse } from '@medicitas/common/errors';
 import { appointmentsRouter } from './routes/appointments.js';
+import { availabilityRouter } from './routes/availability.js';
 
 // Servicio agenda: horarios, bloqueos, disponibilidad, citas y reportes (RF5–RF13, RF16, RF20,
 // RF21). Cada tema tiene su archivo en routes/; los demás llegan en el bloque B.
@@ -34,6 +35,7 @@ app.use(['/schedules', '/blockades', '/availability', '/appointments', '/agenda'
 
 // Cada router pide con requirePermission el permiso específico de cada ruta.
 app.use('/appointments', appointmentsRouter);
+app.use('/availability', availabilityRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Ruta no encontrada' });

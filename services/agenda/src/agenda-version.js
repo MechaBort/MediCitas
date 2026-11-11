@@ -58,8 +58,8 @@ export async function closeAgendaVersion() {
 }
 
 // Días 'YYYY-MM-DD' entre dos fechas, inclusive. Se cuentan en UTC solo para avanzar de a un día: las fechas
-// ya vienen en la hora local de la clínica.
-function daysBetween(firstDay, lastDay) {
+// ya vienen en la hora local de la clínica. También la usa RF8 para recorrer su rango (routes/availability.js).
+export function daysBetween(firstDay, lastDay) {
   const days = [];
   const last = Date.parse(`${lastDay}T00:00:00Z`);
   for (let t = Date.parse(`${firstDay}T00:00:00Z`); t <= last && days.length < 366; t += 86_400_000) {

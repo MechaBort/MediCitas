@@ -51,6 +51,19 @@ export async function freeDay(db, professionalIds) {
   return row.day;
 }
 
+// Varios días seguidos y lejanos en los que ninguno de esos profesionales tiene horario, para las pruebas de un rango
+// de fechas (RF8). Devuelve ['YYYY-MM-DD', ...] en orden.
+export async function freeDays(db, professionalIds, count) {
+  const { rows: [row] } = await db.query(`
+    SELECT ARRAY(SELECT (d::date + k)::text FROM generate_series(0, $2 - 1) AS k ORDER BY k) AS days
+      FROM generate_series(current_date + 400 + (random() * 3000)::int, current_date + 4000, interval '1 day') d
+     WHERE NOT EXISTS (SELECT 1 FROM professional_schedules s
+                        WHERE s.professional_id = ANY ($1)
+                          AND s.period && tstzrange(d - interval '1 day', d + make_interval(days => $2 + 1)))
+     LIMIT 1`, [professionalIds, count]);
+  return row.days;
+}
+
 // Un día del pasado lejano en el que esos profesionales no tienen horario, para citas que ya empezaron (RF12):
 // la API no permite reservar en el pasado, así que esas citas se preparan aquí.
 export async function freePastDay(db, professionalIds) {

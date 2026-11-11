@@ -1766,6 +1766,53 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
 - **Después del COMMIT se suben dos versiones de agenda:** la del día que se libera y la del día que se ocupa, que
   pueden ser de dos profesionales distintos (I8).
 
+**Disponibilidad (RF7, RF8), también en la rama `reservas`, todavía sin caché** 🔴
+
+- **Dos rutas, con el permiso `availability.read`:**
+  - RF7: `GET /availability/professionals/{id}?serviceId=…&date=…`, los espacios de un profesional en un día;
+  - RF8: `GET /availability/services/{id}?from=…&to=…`, los profesionales de un servicio que tienen espacio en un
+    rango, con sus días y espacios.
+- **El cálculo tiene dos pasos.**
+  1. **La base calcula los huecos libres** (`services/agenda/src/availability.js`). Un **hueco** es un tramo en el
+     que el profesional atiende y no tiene nada: su horario, menos sus bloqueos y menos sus citas reservadas. La
+     resta la hace PostgreSQL con **rangos múltiples** (`tstzmultirange`): un conjunto de rangos que no se cruzan.
+     `range_agg` junta los bloques de horario de un día en uno de ellos, y restarle otro quita los tramos ocupados.
+     Por ejemplo, 08:00–12:00 menos 09:00–10:00 da {08:00–09:00, 10:00–12:00}.
+  2. **El servicio corta los huecos en espacios** (`services/agenda/src/slots.js`) del largo del servicio, desde el
+     inicio de cada hueco, y descarta los que ya empezaron, porque RF9 los rechazaría.
+- **Por qué se parte así.** La unidad que calcula la base, (profesional, día), es la misma que guarda la caché y la
+  misma que invalida `bumpAgendaVersion`. Si la base cortara los espacios, la caché necesitaría una copia por cada
+  servicio del profesional. Así guarda los huecos una sola vez y cada servicio los corta con su duración.
+- **Detalles de la consulta.**
+  - **Empieza por los horarios.** Primero busca los bloques de horario del rango con el índice GiST del `EXCLUDE` de
+    horarios, así que un día sin horario no genera trabajo.
+  - **Dos bloques seguidos se unen.** 08:00–10:00 y 10:00–12:00 quedan como un solo tramo, igual que en el trigger
+    de I3, y un espacio puede cruzar de uno al otro.
+  - **Solo restan las citas `reservada`.** Una cita cancelada o reprogramada ya no ocupa su espacio (I7), con la
+    misma regla que la restricción `EXCLUDE`.
+  - **Los días son de la hora local de la clínica.** Un día se convierte en instantes con
+    `fecha::timestamp AT TIME ZONE zona`. Sin el `::timestamp`, PostgreSQL usaría la zona de la sesión en vez de la
+    de la clínica.
+- **`EXPLAIN ANALYZE`, con los datos del seed.** Usa `ex_schedules_overlap` para los horarios y
+  `ex_appointments_professional` (el índice parcial de las citas reservadas) para las citas. Tarda unos 2 ms con
+  un profesional y un día, y menos de 1 ms con dos profesionales y siete días. Los bloqueos se leen con un recorrido
+  secuencial porque la tabla tiene solo 11 filas, una página: con tan pocas filas, PostgreSQL prefiere no usar el
+  índice.
+- **RF8 acepta como máximo 31 días.** El costo crece con los profesionales por los días, y un tope evita que una
+  sola petición cueste lo que cientos. Un profesional sin espacios en el rango no aparece.
+- **Las pruebas (`tests/integration/availability.test.js` y `services/agenda/test/slots.test.js`).**
+  - Comparan los espacios con la grilla esperada en estos casos: un día normal, una jornada partida con dos bloques
+    seguidos y un bloqueo.
+  - Las de I7 e I8 consultan, reservan, cancelan o reprograman uno de los espacios devueltos, y vuelven a consultar:
+    la siguiente consulta tiene que reflejar el cambio. Cuando llegue la caché, estas mismas pruebas demostrarán que
+    no devuelve espacios viejos.
+  - **Discriminan.** Se comprobó en una copia aislada contando las citas de todos los estados, no solo las
+    reservadas: las dos pruebas de I7 fallaron y las demás siguieron pasando.
+- **Medición de carga sin caché (k6, README).** Con 50 usuarios simultáneos responde unas 716 consultas por segundo,
+  con un p95 de 111 ms. El límite es `agenda`, que usó todo el núcleo que aprovecha un proceso de Node, mientras
+  PostgreSQL usaba unos 2,7 núcleos. Por eso, para escalar, además de la caché hacen falta varias copias de `agenda`
+  (el HPA).
+
 ### 8.4 El gateway 🔴
 
 El **gateway** es la única puerta de entrada de la API: un Nginx que escucha en el puerto 3000 y reenvía cada
@@ -1817,8 +1864,8 @@ por petición.
 | RF4 | Profesionales y sus servicios | ✔ `professionals`, `services_per_professionals` | ✘ |
 | RF5 | Horario semanal | ✔ `professional_schedules` con `EXCLUDE` | ✘ |
 | RF6 | Bloqueos y conflictos | ✔ `blockades`; conflictos consultables (E25) | ✘ |
-| RF7 | Espacios disponibles de un profesional | ◐ índices listos; falta el cálculo | ✘ (+ caché) |
-| RF8 | Disponibilidad por servicio en un rango | ◐ índice listo | ✘ |
+| RF7 | Espacios disponibles de un profesional | ✔ índices; los huecos se calculan con rangos múltiples | ✔ `GET /availability/professionals/{id}` (servicio `agenda`), con pruebas de I7 e I8; falta la caché |
+| RF8 | Disponibilidad por servicio en un rango | ✔ índice `ix_spp_clinic_service` | ✔ `GET /availability/services/{id}`, hasta 31 días, con pruebas |
 | RF9 | Reservar | ✔ `EXCLUDE` y triggers | ✔ `POST /appointments` (servicio `agenda`), con la prueba de carrera (sección 8.3) |
 | RF10 | Reprogramar | ✔ `rescheduled_from_id`; probado en el seed | ✔ `POST /appointments/{id}/reschedule`, con pruebas de carrera y de deadlock |
 | RF11 | Cancelar con motivo | ✔ `ck_appointments_cancellation` | ✔ `POST /appointments/{id}/cancel`, con pruebas |
