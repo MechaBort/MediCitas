@@ -135,7 +135,7 @@ La API también validará, pero para dar **mensajes claros** (un 409 con "espaci
 | I5 | Ningún dato de una clínica es accesible desde otra | FKs compuestas `(clinic_id, …)` y, en la API, el `clinic_id` sale del token (`identify` en `packages/common/src/auth.js`) | `db/sql/01-schema.sql`, `packages/common/src/auth.js` | E10, E10b, E10c |
 | I6 | La bitácora no se modifica ni se borra | sin permisos `UPDATE`/`DELETE` y triggers | `db/sql/02-grants.sql:72`, `db/sql/01-schema.sql:650` | E22 |
 | I7 | Cancelar o reprogramar libera el espacio de inmediato | el `EXCLUDE` solo cuenta las citas `reservada` | `db/sql/01-schema.sql:388` | E14 |
-| I8 | La caché nunca contradice a la base | Redis con invalidación | **pendiente** (paso 6) | — |
+| I8 | La caché nunca contradice a la base | invalidación por versión: `INCR` después del COMMIT y la versión se lee antes que la base | `services/agenda/src/availability-cache.js`, `agenda-version.js` | E30 |
 
 ### Preguntas de control
 
@@ -1571,31 +1571,60 @@ curl -s -X POST http://localhost:8080/realms/medicitas/protocol/openid-connect/t
 
 ### 7.1 Para qué está 🟡
 
-RF7 (espacios disponibles de un profesional en una fecha) es la consulta más frecuente del sistema. El plan es el
-patrón **cache-aside**: la API busca primero en Redis; si no está, la calcula en Postgres y guarda el resultado.
-**Pendiente** (paso 6).
+RF7 (espacios disponibles de un profesional en una fecha) es la consulta más frecuente del sistema. Desde la rama
+`cache-rf7` se usa el patrón **cache-aside**: el servicio `agenda` busca primero en Redis; si no encuentra la copia,
+la calcula en PostgreSQL y la guarda. Lo que se guarda son los **huecos libres** de cada profesional y día, no los
+espacios: cada servicio los corta con su propia duración, así que una sola copia sirve para todos sus servicios, y
+RF8 reutiliza las mismas copias día por día. El código está en `services/agenda/src/availability-cache.js`, y la
+conexión, en `redis.js`.
 
 ### 7.2 La configuración y por qué 🟡
 
 | Opción | Por qué |
 |---|---|
-| `--save ""` y `--appendonly no` (sin disco) | El enunciado prohíbe usar Redis como almacén principal. Sin persistencia es evidente que no lo es: si se reinicia, la caché queda vacía y todo se vuelve a leer de Postgres. |
-| `--maxmemory 64mb` y `allkeys-lru` | Una caché necesita un tope. Al llenarse, Redis desaloja lo menos usado recientemente (LRU) en vez de fallar. |
-| `--requirepass` | Contraseña, aunque esté en una red privada. |
-| Sin puerto publicado | Solo la app lo usa. |
+| `--save ""` y `--appendonly no` (sin disco) | El enunciado prohíbe usar Redis como almacén principal. Sin persistencia es evidente que no lo es. Además, si se reinicia, se pierden a la vez las versiones y las copias, así que no queda ninguna copia vieja |
+| `--maxmemory 64mb` y `volatile-lru` | Una caché necesita un tope. Al llenarse, Redis expulsa solo claves con vencimiento (las copias), nunca las versiones, que no vencen. Si expulsara una versión, el contador volvería a empezar y una copia vieja con el mismo número podría leerse como vigente |
+| `--requirepass` | Contraseña, aunque esté en una red privada |
+| Sin puerto publicado | Solo `agenda` lo usa |
 
-### 7.3 I8: el problema de la invalidación (pendiente) 🔴
+### 7.3 I8: la invalidación por versión 🔴
 
 Una caché es una **copia**, y las copias pueden quedar viejas. I8 exige que la disponibilidad que responde la API
-nunca contradiga la base. La idea: **cada operación que cambie la agenda de un profesional** (reservar, cancelar,
-reprogramar, cambiar horario o bloqueos) **borra de Redis las entradas de esa agenda**, después del `COMMIT`. Los
-detalles se decidirán en el paso 6, con una prueba automatizada que reserve y vuelva a consultar.
+nunca contradiga la base. Se resuelve con dos claves por profesional y día:
 
-**E30. Redis por dentro.**
+| Clave | Contenido |
+|---|---|
+| `ver:{clínica}:{profesional}:{fecha}` | La versión vigente de esa agenda. No vence |
+| `disp:{clínica}:{profesional}:{fecha}:v{n}` | Los huecos libres calculados con la versión n. Vence en 60 s |
+
+- **Cada cambio de una agenda sube su versión.** Reservar, cancelar, reprogramar o registrar el desenlace llaman a
+  `bumpAgendaVersion` después del `COMMIT`, que hace `INCR` de la versión de cada día afectado. Las rutas de horarios
+  y bloqueos (RF5, RF6) también tendrán que llamarla. La copia vieja no se borra: queda con un número que ya nadie
+  pide, y vence sola.
+- **Cada consulta lee la versión antes que la base.**
+  1. Lee la versión vigente y busca la copia con ese número.
+  2. Si no está, calcula en la base.
+  3. Después del `COMMIT`, guarda lo calculado con el número que leyó al principio.
+
+  Por qué el orden importa: si la consulta leyó la base justo antes de que se confirmara una reserva, guarda el dato
+  viejo con el número viejo, y la reserva ya subió el número. Nadie vuelve a leer esa copia.
+- **Por qué no borrar la copia al reservar.** Una consulta que leyó la base justo antes de la reserva podría guardar
+  su resultado viejo después del borrado, y quedaría como vigente.
+- **El header `X-MediCitas-Cache`** (`hit`, `miss` u `off`) dice de dónde salió cada respuesta. Gracias a él, las
+  pruebas comprueban que la segunda consulta sale de Redis y que un cambio la invalida.
+- **Si Redis falla,** se calcula todo en la base (`off`): más lento, pero correcto. El único caso en que puede verse
+  una copia vieja es una falla parcial: la reserva se confirmó, pero no se pudo subir la versión, y otra copia de
+  `agenda` sigue leyendo Redis. Entonces la copia vieja se ve hasta que vence, a más tardar en 60 segundos. Aun así,
+  nadie puede reservar dos veces el mismo espacio, porque lo impide la restricción `EXCLUDE`.
+
+**E30. Redis por dentro.** Con la pila arriba y después de consultar la disponibilidad:
 
 ```bash
-docker compose exec redis redis-cli CONFIG GET maxmemory-policy   # allkeys-lru
-docker compose exec redis redis-cli DBSIZE                        # 0: todavía nadie lo usa
+P=$(grep ^REDIS_PASSWORD= .env | cut -d= -f2)
+docker compose exec redis redis-cli --no-auth-warning -a "$P" CONFIG GET maxmemory-policy   # volatile-lru
+docker compose exec redis redis-cli --no-auth-warning -a "$P" --scan --pattern 'ver:*'       # versiones, sin vencimiento
+docker compose exec redis redis-cli --no-auth-warning -a "$P" --scan --pattern 'disp:*'      # copias, con su versión
+docker compose exec redis redis-cli --no-auth-warning -a "$P" TTL <una clave disp:…>         # segundos que le quedan
 ```
 
 ---
@@ -1608,7 +1637,8 @@ servicios y el gateway:
 ```
 packages/common/src/      auth.js, db.js, errors.js     ← los usan los tres servicios
 services/admin/src/       app.js, server.js, accounts.js, keycloak.js, routes/clinics.js, routes/users.js
-services/agenda/src/      app.js, server.js             ← sin rutas todavía
+services/agenda/src/      app.js, server.js, redis.js, agenda-version.js, availability.js, availability-cache.js,
+                          slots.js, routes/appointments.js, routes/availability.js
 services/clinical/src/    app.js, server.js             ← sin rutas todavía
 gateway/nginx.conf        el reparto de rutas
 ```
@@ -1813,6 +1843,30 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   PostgreSQL usaba unos 2,7 núcleos. Por eso, para escalar, además de la caché hacen falta varias copias de `agenda`
   (el HPA).
 
+**La caché de RF7, en la rama `cache-rf7`** 🔴 (el mecanismo está en la Parte 7)
+
+- **Las rutas siguen tres pasos.** Primero leen Redis (`readCachedGaps`). Después hacen la transacción en la base:
+  la validación de siempre y, solo para los pares que faltaron, `computeGaps`. Por último, después del COMMIT,
+  guardan lo calculado (`storeGaps`). En RF8, la validación y el cálculo van en dos transacciones, porque los pares a
+  leer dependen de los profesionales que trae la base.
+- **La validación no se guarda en caché.** Revisar el profesional, el servicio y la duración son búsquedas por
+  índice, y así un profesional dado de baja deja de mostrar espacios de inmediato.
+- **La conexión a Redis se movió a `redis.js`,** porque ahora la usan las versiones y la caché.
+  `bumpAgendaVersion` no cambió.
+- **Las pruebas (`tests/integration/availability-cache.test.js`)** comprueban la secuencia `miss`, `hit`, cambio,
+  `miss`, al reservar, cancelar y reprogramar, y que RF7 y RF8 comparten las copias. Además, las tres pruebas de I7 e
+  I8 que ya existían ahora pasan por la caché.
+- **Las pruebas detectan el error.** Con el `INCR` apagado dentro del contenedor, fallaron justo las cinco pruebas
+  de invalidación, y las demás siguieron pasando.
+- **Un detalle de las pruebas.** Los helpers de `db.js` crean horarios directo en la base y no suben la versión. Por
+  eso las pruebas crean el horario antes de la primera consulta, y las consultas a días que se quedan sin horario
+  usan fechas del año 2000, que `freeDay` nunca elige. En producción lo resuelve la ruta de RF5, que subirá la
+  versión.
+- **Medición con caché (README).**
+  - Con una copia de `agenda`: unas 963 consultas por segundo, frente a 716 sin caché, y p95 de 81 ms, frente a 111.
+  - Con tres copias: unas 2 415 por segundo, frente a 1 714, y la base baja de unos 8,2 núcleos a 5,6.
+  - La base hace la mitad del trabajo por consulta, y cada copia de `agenda` sigue limitada por su CPU.
+
 ### 8.4 El gateway 🔴
 
 El **gateway** es la única puerta de entrada de la API: un Nginx que escucha en el puerto 3000 y reenvía cada
@@ -1864,7 +1918,7 @@ por petición.
 | RF4 | Profesionales y sus servicios | ✔ `professionals`, `services_per_professionals` | ✘ |
 | RF5 | Horario semanal | ✔ `professional_schedules` con `EXCLUDE` | ✘ |
 | RF6 | Bloqueos y conflictos | ✔ `blockades`; conflictos consultables (E25) | ✘ |
-| RF7 | Espacios disponibles de un profesional | ✔ índices; los huecos se calculan con rangos múltiples | ✔ `GET /availability/professionals/{id}` (servicio `agenda`), con pruebas de I7 e I8; falta la caché |
+| RF7 | Espacios disponibles de un profesional | ✔ índices; los huecos se calculan con rangos múltiples | ✔ `GET /availability/professionals/{id}` (servicio `agenda`), con la caché de Redis y pruebas de I7 e I8 |
 | RF8 | Disponibilidad por servicio en un rango | ✔ índice `ix_spp_clinic_service` | ✔ `GET /availability/services/{id}`, hasta 31 días, con pruebas |
 | RF9 | Reservar | ✔ `EXCLUDE` y triggers | ✔ `POST /appointments` (servicio `agenda`), con la prueba de carrera (sección 8.3) |
 | RF10 | Reprogramar | ✔ `rescheduled_from_id`; probado en el seed | ✔ `POST /appointments/{id}/reschedule`, con pruebas de carrera y de deadlock |

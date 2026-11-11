@@ -4,14 +4,19 @@ import { requirePermission } from '@medicitas/common/auth';
 import { withTransaction } from '@medicitas/common/db';
 import { HttpError, parse } from '@medicitas/common/errors';
 import { daysBetween } from '../agenda-version.js';
-import { freeGaps, gapsKey } from '../availability.js';
+import { computeGaps, gapsOf, readCachedGaps, storeGaps } from '../availability-cache.js';
 import { sliceGaps } from '../slots.js';
 
 // Disponibilidad (RF7, RF8): solo lectura. Todas las consultas filtran por req.user.clinicId: un profesional o un
 // servicio de otra clínica responde 404, igual que uno que no existe (I5). Las fechas son días en la hora local de la
 // clínica ('YYYY-MM-DD'); los espacios salen como instantes ISO 8601, en el mismo formato que la reserva, así que un
 // espacio devuelto se puede mandar tal cual a POST /appointments.
+//
+// Los huecos pasan por la caché de Redis (availability-cache.js): primero Redis, luego la base solo para lo que falte,
+// y después del COMMIT se guarda lo calculado. El header X-MediCitas-Cache dice de dónde salió la respuesta: 'hit'
+// (todo de Redis), 'miss' (algo se calculó en la base y se guardó) u 'off' (Redis no disponible; todo de la base).
 export const availabilityRouter = Router();
+const CACHE_HEADER = 'X-MediCitas-Cache';
 
 const id = z.coerce.number().int().positive().max(2147483647);
 
@@ -42,22 +47,28 @@ availabilityRouter.get('/professionals/:professionalId', requirePermission('avai
   const { serviceId, date } = parse(professionalQuery, req.query);
   const { clinicId, dbRole } = req.user;
 
-  const { duration, gaps } = await withTransaction(dbRole, async (client) => {
+  // 1. Redis, antes de la base: la versión vigente y su copia.
+  const cached = await readCachedGaps(clinicId, [{ professionalId, day: date }]);
+
+  // 2. Una sola transacción: la validación siempre; el cálculo de los huecos solo si no había copia.
+  const { duration, computed } = await withTransaction(dbRole, async (client) => {
     const { rows: [check] } = await client.query(PROFESSIONAL_CHECK_SQL, [clinicId, professionalId, serviceId]);
     if (!check.professional_ok) throw new HttpError(404, 'Profesional no encontrado');
     if (check.duration === null) throw new HttpError(404, 'Servicio no encontrado');
     if (!check.offered) throw new HttpError(400, 'El profesional no atiende ese servicio');
 
-    const gaps = await freeGaps(client, { clinicId, professionalIds: [professionalId], firstDay: date });
-    return { duration: check.duration, gaps };
+    return { duration: check.duration, computed: await computeGaps(client, clinicId, cached.missing) };
   });
 
-  res.json({
+  // 3. Después del COMMIT, se guarda lo calculado con la versión leída en el paso 1.
+  await storeGaps(clinicId, cached, computed);
+
+  res.set(CACHE_HEADER, cached.status).json({
     professionalId,
     serviceId,
     date,
     durationMinutes: duration,
-    slots: sliceGaps(gaps.get(gapsKey(professionalId, date)) ?? [], duration),
+    slots: sliceGaps(gapsOf(cached, computed, professionalId, date), duration),
   });
 });
 
@@ -81,30 +92,36 @@ availabilityRouter.get('/services/:serviceId', requirePermission('availability.r
   if (days.length > MAX_RANGE_DAYS) throw new HttpError(400, `El rango no puede pasar de ${MAX_RANGE_DAYS} días`);
   const { clinicId, dbRole } = req.user;
 
-  const { duration, professionals, gaps } = await withTransaction(dbRole, async (client) => {
+  // Los profesionales salen de la base, así que aquí la validación va primero y la caché después.
+  const { duration, professionals } = await withTransaction(dbRole, async (client) => {
     const { rows: [service] } = await client.query(
       'SELECT duration_minutes FROM services WHERE clinic_id = $1 AND service_id = $2 AND is_active',
       [clinicId, serviceId]);
     if (!service) throw new HttpError(404, 'Servicio no encontrado');
 
     const { rows: professionals } = await client.query(SERVICE_PROFESSIONALS_SQL, [clinicId, serviceId]);
-    const gaps = await freeGaps(client, {
-      clinicId,
-      professionalIds: professionals.map((p) => p.professional_id),
-      firstDay: from,
-      lastDay: to,
-    });
-    return { duration: service.duration_minutes, professionals, gaps };
+    return { duration: service.duration_minutes, professionals };
   });
+
+  // Las mismas copias que RF7, una por (profesional, día): Redis primero; una segunda transacción solo si falta
+  // alguna; después de su COMMIT, se guarda lo calculado.
+  const pairs = professionals.flatMap(({ professional_id: professionalId }) =>
+    days.map((day) => ({ professionalId, day })));
+  const cached = await readCachedGaps(clinicId, pairs);
+  const computed = cached.missing.length === 0
+    ? new Map()
+    : await withTransaction(dbRole, (client) => computeGaps(client, clinicId, cached.missing));
+  await storeGaps(clinicId, cached, computed);
 
   const now = new Date();
   const available = [];
   for (const { professional_id: professionalId, name } of professionals) {
     const withSlots = days
-      .map((date) => ({ date, slots: sliceGaps(gaps.get(gapsKey(professionalId, date)) ?? [], duration, now) }))
+      .map((date) => ({ date, slots: sliceGaps(gapsOf(cached, computed, professionalId, date), duration, now) }))
       .filter((day) => day.slots.length > 0);
     if (withSlots.length > 0) available.push({ professionalId, name, days: withSlots });
   }
 
-  res.json({ serviceId, from, to, durationMinutes: duration, professionals: available });
+  res.set(CACHE_HEADER, cached.status)
+    .json({ serviceId, from, to, durationMinutes: duration, professionals: available });
 });

@@ -107,6 +107,8 @@ export async function localInstant(db, clinicId, day, time) {
 }
 
 // Bloque de horario [from, to) en la hora local de la clínica. Lo registra el usuario Sistema (user_id 1).
+// Como escribe directo en la base, no sube la versión de la agenda en Redis (la caché de RF7): se usa en días nuevos,
+// antes de consultar su disponibilidad. Lo mismo vale para addBlockade.
 export async function addScheduleBlock(db, { clinicId, professionalId, day, from, to }) {
   await db.query(`
     INSERT INTO professional_schedules (clinic_id, professional_id, period, updated_by)

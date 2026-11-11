@@ -3,7 +3,8 @@
 // Un hueco es un tramo de tiempo en el que el profesional atiende y no tiene nada: su horario (RF5), menos sus
 // bloqueos (RF6) y menos sus citas reservadas. Los calcula la base en una sola consulta; el corte en espacios de la
 // duración de cada servicio lo hace slots.js. La unidad es (profesional, día local de la clínica), la misma que la
-// versión de agenda de agenda-version.js: aquí es donde la etapa siguiente pone la caché de RF7, sin tocar las rutas.
+// versión de agenda de agenda-version.js y la de cada copia de la caché de RF7 (availability-cache.js), que llama a
+// freeGaps solo para los pares que no encontró en Redis.
 
 // $1 clínica, $2 profesionales (int[]), $3 y $4 primer y último día local, inclusive ('YYYY-MM-DD').
 //

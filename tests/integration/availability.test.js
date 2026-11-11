@@ -3,6 +3,12 @@
 // devuelto y vuelven a consultar: la siguiente consulta tiene que reflejar el cambio. Cuando llegue la caché de RF7,
 // estas mismas pruebas son las que demuestran que la caché no devuelve espacios viejos.
 // Cada prueba prepara su propio horario en días lejanos y únicos (db.js), así no depende del seed.
+//
+// Desde la caché de RF7, una consulta deja guardados los huecos de ese día durante 60 s, también si están vacíos. Los
+// helpers de db.js escriben directo en la base y no suben la versión de la agenda, así que si otra prueba eligiera ese
+// mismo día con freeDay y le agregara horario, leería la copia vacía. Por eso las consultas a días que se quedan sin
+// horario usan fechas del año 2000 (EMPTY_DAY), que freeDay y freePastDay nunca eligen, o le agregan horario al día
+// después de consultarlo, para que freeDay ya no lo elija.
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { api, requireStack, token } from './helpers.js';
@@ -56,6 +62,9 @@ const byProfessional = (bearer, professionalId, query) =>
 const byService = (bearer, serviceId, query) =>
   api('GET', `/availability/services/${serviceId}?${new URLSearchParams(query)}`, { token: bearer });
 const book = (body) => api('POST', '/appointments', { token: reception, body });
+
+// Un día sin horario fuera del rango de freeDay (+400 a +4000 días) y de freePastDay (-400 a -4000).
+const EMPTY_DAY = '2000-01-03';
 
 const starts = (slots) => slots.map((s) => s.start);
 const minutesBetween = (start, end) => (Date.parse(end) - Date.parse(start)) / 60_000;
@@ -130,7 +139,10 @@ test('RF6, RF7: un bloqueo quita los espacios que toca', async () => {
 });
 
 test('RF7: un día sin horario, o con horario pero ya pasado, no tiene espacios', async () => {
-  assert.deepEqual(await slotsOf(p1, await freeDay(db, [p1.professionalId])), []);
+  const empty = await freeDay(db, [p1.professionalId]);
+  assert.deepEqual(await slotsOf(p1, empty), []);
+  // El día queda con su copia vacía en la caché: con un horario, freeDay ya no lo elige para otra prueba.
+  await addScheduleBlock(db, { clinicId, professionalId: p1.professionalId, day: empty, from: '08:00', to: '12:00' });
 
   const past = await freePastDay(db, [p1.professionalId]);
   await addScheduleBlock(db, { clinicId, professionalId: p1.professionalId, day: past, from: '08:00', to: '12:00' });
@@ -197,7 +209,7 @@ test('RF4, RF7: un servicio que el profesional no atiende responde 400', async (
 });
 
 test('RF7, RF8, RF17: sin token responde 401, la plataforma 403, y el profesional sí consulta (200)', async () => {
-  const date = await freeDay(db, [p1.professionalId]);
+  const date = EMPTY_DAY;
   const query = { serviceId: p1.serviceId, date };
   assert.equal((await byProfessional(undefined, p1.professionalId, query)).status, 401);
   assert.equal((await byService(undefined, p1.serviceId, { from: date, to: date })).status, 401);
@@ -247,7 +259,7 @@ test('RF8: solo aparecen los profesionales con espacio, y cada día coincide con
 });
 
 test('RF8, I5: el rango se valida: al revés o de más de 31 días responde 400; de otra clínica, 404', async () => {
-  const from = await freeDay(db, shared.professionalIds);
+  const from = EMPTY_DAY;
   const cases = [
     [400, shared.serviceId, { from, to: addDays(from, -1) }],
     [400, shared.serviceId, { from, to: addDays(from, 31) }],

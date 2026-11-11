@@ -382,9 +382,15 @@ transacción.
 Las cifras de la tabla miden solo la base. La medición de punta a punta de RF7 (gateway, `agenda` y base, con k6)
 está en el README, sección "Medición de carga de RF7". Sin caché y con una sola copia de `agenda`, se atienden unas
 716 consultas por segundo, con un p95 de 111 ms. El límite es `agenda`: un proceso de Node aprovecha un solo núcleo,
-y llegó a ~110 % de CPU mientras PostgreSQL usaba ~270 %. Por eso la meta de 3 300 por segundo no depende solo de la
-caché, sino también de tener varias copias de `agenda` (el HPA de Kubernetes). La medición con caché está
-pendiente.
+y llegó a ~110 % de CPU mientras PostgreSQL usaba ~270 %.
+
+Con tres copias de `agenda` y sin caché, se atienden unas 1 714 por segundo, pero la base pasa a usar ~820 % de CPU:
+al agregar copias, la base se convierte en el recurso que se satura. Con la caché de RF7 (sección 8), las mismas tres
+copias atienden unas 2 415 por segundo con un p95 de 37 ms, y la base baja a ~560 %. Es decir, la base hace la mitad
+del trabajo por consulta.
+
+La meta de 3 300 por segundo se alcanza combinando las dos cosas: varias copias de `agenda` (el HPA de Kubernetes),
+porque cada una está limitada por su CPU, y la caché, que evita que la base se sature al agregarlas.
 
 ---
 
@@ -441,8 +447,50 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   responder.
 - **Si Redis no responde,** el cambio ya está confirmado en la base, que es la fuente de verdad: se registra el error
   y la petición responde normalmente. El cliente usa `disableOfflineQueue`, así que un comando sin conexión falla
-  en milisegundos en vez de quedar esperando. Qué pasa con las copias viejas en ese caso se decide en la etapa de la
-  caché.
+  en milisegundos en vez de quedar esperando. La copia vieja de ese día deja de leerse, a más tardar, cuando vence
+  (60 s; ver la decisión del vencimiento en `comparacion-arquitecturas.md`, "Si Redis falla").
+
+**Decisión de la rama `cache-rf7`: cómo se lee la caché (RF7, RF8).**
+- **Problema.** La copia de un día debe ser siempre la que corresponde a la versión vigente de esa agenda (I8), aunque
+  una reserva se confirme a la mitad de una consulta.
+- **Elegido.** Tres pasos, en este orden (`services/agenda/src/availability-cache.js`):
+  1. **Redis, antes de la base.** `readCachedGaps` lee las versiones vigentes de los pares (profesional, día) y
+     después las copias de esas versiones, en dos `MGET`.
+  2. **La base, solo para lo que falte.** RF7 hace una sola transacción, con la validación y el cálculo de los pares
+     que faltaron (`computeGaps`, que reutiliza `freeGaps`). RF8 necesita los profesionales para saber qué pares
+     leer, así que valida en una transacción y calcula lo que falte en otra.
+  3. **Después del COMMIT, se guarda.** `storeGaps` guarda lo calculado con la versión leída en el paso 1, con
+     vencimiento de 60 s. Los días sin huecos también se guardan, como lista vacía.
+- **Por qué este orden.** Si una consulta lee la base justo antes de que se confirme una reserva, la versión que leyó
+  antes es la vieja, así que guarda el dato viejo con el número viejo. La reserva sube el número después de su COMMIT,
+  y nadie vuelve a leer esa copia. Si la versión se leyera después de la base, el dato viejo podría quedar guardado con
+  el número nuevo.
+- **Lo que no cambió.** La validación del profesional, el servicio y la duración sigue consultando la base en cada
+  consulta. Son búsquedas por índice, y así un profesional dado de baja deja de mostrar espacios de inmediato. Si se
+  guardara en caché, `admin` (que cambia esos datos con RF3 y RF4) tendría que invalidar una caché de `agenda`.
+- **Alternativas descartadas.** Las de `comparacion-arquitecturas.md`: borrar la copia al reservar, actualizarla al
+  reservar, o un candado.
+- **Lo que se sacrifica.** En una consulta que no encuentra la copia, RF8 hace dos transacciones en lugar de una.
+
+**Decisión de la rama `cache-rf7`: el header `X-MediCitas-Cache`.**
+- **Problema.** Sin una señal en la respuesta, una prueba no puede distinguir si la caché funciona. La prueba de I8
+  pasaba igual con caché y sin ella, porque solo miraba los espacios.
+- **Elegido.** RF7 y RF8 responden `X-MediCitas-Cache: hit | miss | off`. Las pruebas comprueban la secuencia
+  `miss`, `hit`, cambio, `miss`, y k6 cuenta los aciertos.
+- **Alternativas descartadas.** Ponerlo en el cuerpo, que mezcla un detalle interno con el contrato de la API. Leer
+  las estadísticas de Redis, que dan el total pero no el de cada petición.
+- **Lo que se sacrifica.** La respuesta revela un detalle interno, pero no expone ningún dato.
+
+**Decisión de la rama `cache-rf7`: la conexión a Redis tiene su propio archivo.**
+- **Problema.** La conexión la creaba `agenda-version.js`, y ahora también la usa la caché.
+- **Elegido.** La conexión se movió sin cambios a `services/agenda/src/redis.js` (`redis` y `closeRedis`), de donde
+  la importan las versiones y la caché.
+  - `agenda-version.js` conserva `versionKey`, `bumpAgendaVersion` y `daysBetween`.
+  - Para las rutas de horarios y bloqueos no cambia nada.
+- **Alternativas descartadas.**
+  - Una segunda conexión, con la configuración repetida.
+  - Exportar el cliente desde `agenda-version.js`, que haría depender la caché del módulo de versiones solo para
+    conectarse.
 
 **Decisión de la rama `reservas`: la base calcula los huecos y el servicio los corta en espacios (RF7, RF8).**
 - **Problema.** RF7 es la consulta más frecuente del sistema y la que va a usar la caché. Hay que decidir dónde se
@@ -455,8 +503,8 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
     citas reservadas.
   - **En el servicio, una función pura** (`services/agenda/src/slots.js`) corta esos huecos en espacios seguidos
     del largo del servicio, desde el inicio de cada hueco, y descarta los que ya empezaron.
-  - La unidad es (profesional, día local de la clínica), la misma que la versión de agenda. La caché va a guardar
-    los huecos de cada par una sola vez, y cada servicio los corta con su propia duración. RF8 usa la misma
+  - La unidad es (profesional, día local de la clínica), la misma que la versión de agenda. La caché guarda los
+    huecos de cada par una sola vez, y cada servicio los corta con su propia duración. RF8 usa la misma
     función para todos los profesionales del servicio y todos los días del rango.
 - **Alternativas descartadas.**
   - Cortar en SQL con `generate_series`: la caché tendría que guardar una copia por profesional, día **y
@@ -470,7 +518,7 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
 **Decisión: RF8 acepta como máximo 31 días.**
 - **Problema.** El costo de RF8 crece con los profesionales por los días. Sin tope, una sola petición de un año
   para un servicio con diez profesionales (unos 2 500 días con horario) costaría lo que cientos de peticiones
-  normales. Además, en la etapa de la caché llenaría Redis con entradas que nadie vuelve a leer.
+  normales. Además, llenaría Redis con copias que nadie vuelve a leer.
 - **Elegido.** Un rango de más de 31 días responde 400. Alcanza para consultar un mes completo.
 - **Alternativas descartadas.** No poner tope. Paginar la respuesta, que protege igual, pero agrega código y es más
   difícil de explicar.

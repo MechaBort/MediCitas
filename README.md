@@ -91,9 +91,11 @@ npm run test:integration # solo las de integración
 - La prueba de carrera (pregunta rectora) está en `tests/integration/appointments.test.js`: dos recepcionistas, y
   después diez clientes, reservan a la vez el último espacio de un profesional, y siempre se concede exactamente
   una reserva.
-- Las pruebas de I7 e I8 están en `tests/integration/availability.test.js`: consultan los espacios de un día,
-  reservan, cancelan o reprograman uno de los espacios devueltos, y vuelven a consultar. La siguiente consulta tiene
-  que reflejar el cambio.
+- Las pruebas de I7 e I8 están en `tests/integration/availability.test.js` y
+  `tests/integration/availability-cache.test.js`. Consultan los espacios de un día, reservan, cancelan o reprograman
+  uno de los espacios devueltos, y vuelven a consultar. La siguiente consulta tiene que reflejar el cambio. Las de la
+  caché, además, comprueban con el header `X-MediCitas-Cache` que la segunda consulta sale de Redis (`hit`) y que el
+  cambio la invalida (`miss`). Exigen que Redis esté arriba.
 
 ### Medición de carga de RF7
 
@@ -106,16 +108,35 @@ docker run --rm -i --network medicitas_default grafana/k6:1.3.0 run - < tests/lo
 
 Durante 30 segundos, 50 usuarios simultáneos consultan sin pausas los espacios de un profesional en un día al azar
 de las próximas dos semanas del seed, siempre a través del gateway y con un token real. Se mide cuántas consultas
-por segundo se atienden y el **p95**, el tiempo dentro del cual responde el 95 % de las consultas.
+por segundo se atienden y el **p95**, el tiempo dentro del cual responde el 95 % de las consultas. `cache_hits` es
+el porcentaje de respuestas que salieron de la caché de Redis (header `X-MediCitas-Cache: hit`).
 
-| Medición | Consultas por segundo | p95 | Errores |
-|---|---|---|---|
-| Sin caché (2026-11-11) | ~716 | 111 ms | 0 de 21 584 |
-| Con la caché de RF7 | pendiente | | |
+Para medir con varias copias de `agenda`, como las que agrega el HPA en Kubernetes, se levantan antes con
+`docker compose up -d --scale agenda=3 --wait` y `docker compose restart gateway`, para que el gateway las vea a todas.
 
-Todo corre en la misma máquina (16 hilos, Docker Desktop), con una sola copia de `agenda`, incluso k6. Durante la
-medición sin caché, `agenda` usó ~110 % de CPU, el núcleo completo que aprovecha un proceso de Node, y PostgreSQL
-~270 %. Las cifras solo sirven para comparar entre sí mediciones hechas en la misma máquina.
+Resultados del 2026-11-11, sin errores en ninguna medición:
+
+| Copias de `agenda` | Caché de RF7 | Consultas por segundo | p95 | CPU de PostgreSQL | Aciertos de la caché |
+|---|---|---|---|---|---|
+| 1 | No | ~716 | 111 ms | ~270 % | — |
+| 1 | Sí | ~963 | 81 ms | ~190 % | 100 % |
+| 3 | No | ~1 714 | 46 ms | ~820 % | — |
+| 3 | Sí | ~2 415 | 37 ms | ~560 % | 99,9 % |
+
+Lo que muestran:
+
+- **La caché reduce a la mitad el trabajo de la base por consulta.** Con 3 copias, la base atendió un 41 % más de
+  consultas usando un 30 % menos de CPU. Lo que sigue llegando a la base en cada consulta es la identidad del token
+  y la validación del profesional y el servicio, que son búsquedas por índice.
+- **El límite de cada copia es su CPU.** Cada copia de `agenda` usó ~105–115 % en todas las mediciones: el núcleo
+  completo que aprovecha un proceso de Node. Por eso la capacidad crece con más copias, y la caché es lo que evita
+  que la base se sature al agregarlas.
+- **El porcentaje de aciertos es alto porque la prueba es pequeña:** 14 pares de profesional y día, consultados
+  durante 30 segundos, menos que lo que dura una copia (60 s). Con más agendas distintas habría más cálculos en la
+  base.
+
+Todo corre en la misma máquina (16 hilos, Docker Desktop), incluso k6. Las cifras solo sirven para comparar entre
+sí mediciones hechas en la misma máquina.
 
 ## Diseño de la base de datos (PostgreSQL)
 
@@ -972,6 +993,18 @@ empezaron no se devuelven.
 Las fechas (`date`, `from`, `to`) son días `YYYY-MM-DD` en la hora local de la clínica. Cada espacio es
 `{start, end}`, dos instantes ISO 8601 en UTC, en el mismo formato que la reserva: el `start` de un espacio se puede
 mandar tal cual a `POST /appointments`.
+
+Los huecos libres de cada profesional y día se guardan en Redis durante 60 segundos (caché de RF7, ver "Decisión:
+caché de disponibilidad" en `docs/comparacion-arquitecturas.md`). Toda reserva, cancelación, reprogramación o
+desenlace invalida de inmediato la copia de ese día, así que la siguiente consulta ya refleja el cambio (I8). Si
+Redis no está disponible, la consulta se calcula en la base y responde igual. El header `X-MediCitas-Cache` dice de
+dónde salió cada respuesta:
+
+| Valor | Significado |
+|---|---|
+| `hit` | Todos los huecos salieron de Redis |
+| `miss` | Alguno se calculó en la base y quedó guardado |
+| `off` | Redis no estaba disponible: todo se calculó en la base, sin guardar |
 
 #### `GET /availability/professionals/{professionalId}?serviceId=…&date=…` (RF7)
 Espacios libres de un profesional en una fecha, para uno de sus servicios.

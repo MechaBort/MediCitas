@@ -1,28 +1,14 @@
-import { createClient } from 'redis';
+import { redis } from './redis.js';
 
 // Versión de la agenda de cada profesional por día, en Redis (caché de RF7, invariante I8).
 //
-// La caché de disponibilidad guarda los huecos libres de un profesional en un día bajo una clave que incluye
-// la versión vigente de esa agenda (ver "Caché de RF7" en docs/diseno-servicios.md). Cuando la agenda cambia,
-// se sube la versión: las copias guardadas con la versión anterior dejan de leerse, aunque sigan en Redis.
+// La caché de disponibilidad (availability-cache.js) guarda los huecos libres de un profesional en un día bajo una
+// clave que incluye la versión vigente de esa agenda (ver "Caché de RF7" en docs/diseno-servicios.md). Cuando la
+// agenda cambia, se sube la versión: las copias guardadas con la versión anterior dejan de leerse, aunque sigan en
+// Redis.
 //
 // Clave: ver:{clínica}:{profesional}:{fecha}, con la fecha local de la clínica (YYYY-MM-DD). No vence.
-
-const client = createClient({
-  url: process.env.REDIS_URL,
-  // Sin conexión, un comando falla enseguida en vez de quedar en cola esperando a Redis.
-  disableOfflineQueue: true,
-  socket: {
-    connectTimeout: 1000,
-    reconnectStrategy: (retries) => Math.min(retries * 200, 2000),
-  },
-});
-
-// Sin este manejador, un error de conexión tumbaría el proceso.
-client.on('error', (err) => console.error('Redis:', err.message));
-
-// Se conecta al arrancar; si Redis no está, sigue reintentando por su cuenta (reconnectStrategy).
-client.connect().catch((err) => console.error('Redis: no se pudo conectar al arrancar:', err.message));
+// La conexión a Redis está en redis.js.
 
 export const versionKey = (clinicId, professionalId, day) => `ver:${clinicId}:${professionalId}:${day}`;
 
@@ -36,25 +22,22 @@ export const versionKey = (clinicId, professionalId, day) => `ver:${clinicId}:${
 // responder; nunca dentro de withTransaction, porque un reintento por deadlock la ejecutaría dos veces.
 //
 // Si Redis no responde, el cambio ya está confirmado en la base, que es la fuente de verdad: se registra el
-// error y la petición sigue. Qué pasa entonces con las copias viejas lo resuelve la etapa de la caché.
+// error y la petición sigue. La copia vieja de ese día deja de leerse a más tardar cuando vence
+// (COPY_TTL_SECONDS en availability-cache.js); mientras tanto, una reserva sobre ese espacio igual la rechaza la
+// restricción EXCLUDE (409).
 export async function bumpAgendaVersion({ clinicId, professionalId, firstDay, lastDay = firstDay }) {
   const keys = daysBetween(firstDay, lastDay).map((day) => versionKey(clinicId, professionalId, day));
-  if (!client.isReady) {
+  if (!redis.isReady) {
     console.error(`Redis no disponible: no se subió la versión de ${keys.join(', ')}`);
     return;
   }
   try {
-    const multi = client.multi();
+    const multi = redis.multi();
     for (const key of keys) multi.incr(key);
     await multi.exec();
   } catch (err) {
     console.error(`No se pudo subir la versión de ${keys.join(', ')}:`, err.message);
   }
-}
-
-// Cierra la conexión al apagar el servicio (server.js).
-export async function closeAgendaVersion() {
-  if (client.isOpen) await client.close();
 }
 
 // Días 'YYYY-MM-DD' entre dos fechas, inclusive. Se cuentan en UTC solo para avanzar de a un día: las fechas

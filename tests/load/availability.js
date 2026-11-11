@@ -10,10 +10,14 @@
 // setup() pide un token de recepción y, con RF8, arma la lista de pares (profesional, día) con espacio en las
 // próximas dos semanas del seed. Después, cada usuario virtual consulta RF7 sobre un par al azar, sin pausas, durante
 // todo el tiempo de la prueba. Lo que importa del resultado: http_reqs (consultas por segundo) y el p95 de
-// http_req_duration, el tiempo dentro del cual responde el 95 % de las consultas. Es la línea base para comparar con la
-// caché de RF7: la misma prueba, en la misma máquina, antes y después.
+// http_req_duration, el tiempo dentro del cual responde el 95 % de las consultas. cache_hits es el porcentaje que
+// salió de la caché de RF7 (0 % antes de la caché). La misma prueba, en la misma máquina, antes y después.
 import http from 'k6/http';
 import { check } from 'k6';
+import { Rate } from 'k6/metrics';
+
+// Porcentaje de respuestas que salieron de la caché de Redis (header X-MediCitas-Cache: hit).
+const cacheHits = new Rate('cache_hits');
 
 const API_URL = __ENV.API_URL || 'http://gateway:3000';
 const KEYCLOAK_URL = __ENV.KEYCLOAK_URL || 'http://keycloak:8080';
@@ -59,4 +63,5 @@ export default function ({ token, pairs }) {
     { headers: { authorization: `Bearer ${token}` }, tags: { name: 'RF7' } },
   );
   check(res, { 'RF7 responde 200': (r) => r.status === 200 });
+  cacheHits.add(res.headers['X-Medicitas-Cache'] === 'hit');
 }

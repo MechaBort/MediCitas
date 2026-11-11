@@ -131,7 +131,8 @@ la red.
 
 ## Decisión: caché de disponibilidad (RF7)
 
-> Decidido el 2026-11-08. **Diseño aprobado, pendiente de implementar.**
+> Decidido el 2026-11-08 e **implementado el 2026-11-11** en `services/agenda/src/availability-cache.js`, con la
+> conexión en `redis.js` y las versiones en `agenda-version.js`. Las copias vencen en 60 segundos.
 
 RF7, el cálculo de los espacios disponibles de un profesional en una fecha, es la consulta que más se ejecuta.
 Para no recalcularla en cada petición, el servicio `agenda` guarda el resultado en Redis. Redis es solo una
@@ -178,7 +179,8 @@ cambiar horarios o bloqueos.
 3. Recién entonces se responde al cliente.
 
 La copia anterior no se borra. Queda guardada con un número de versión que ya nadie consulta y desaparece sola
-al expirar. Esa expiración solo libera memoria: la corrección no depende de ella.
+al expirar. En el funcionamiento normal, esa expiración solo libera memoria: la corrección no depende de ella. La
+única excepción es la falla parcial que se describe en "Si Redis falla".
 
 El orden importa. Si la versión subiera antes del COMMIT, una consulta podría tomar la versión nueva, leer la
 base antes de que la reserva se confirme y guardar un dato viejo justo en la copia vigente. Esto encaja con
@@ -221,10 +223,41 @@ esa cuenta en cada entorno, y en Kubernetes se usa la misma política.
 
 ### Si Redis falla
 
-`agenda` consulta directamente PostgreSQL. Las respuestas son más lentas, pero nunca incorrectas.
+`agenda` consulta directamente PostgreSQL. Las respuestas son más lentas, pero nunca incorrectas. Las reservas
+siguen funcionando: si no se puede subir la versión, el cambio ya está confirmado en la base y solo se registra el
+error. Se comprobó deteniendo Redis en una copia aislada: RF7 respondió 200 con el header `X-MediCitas-Cache: off` y
+la reserva, 201. Al volver Redis, la primera consulta se calculó de nuevo (`miss`) con la reserva incluida.
+
+Cuando Redis vuelve hay dos casos:
+
+- **Redis se reinició.** Perdió todo, porque no guarda nada en disco, así que no queda ninguna copia vieja.
+- **Solo hubo un corte de red y Redis siguió vivo.** Este es el único caso en que la corrección depende del
+  vencimiento. Supongamos que una reserva se confirmó en la base, pero la copia de `agenda` que la atendió no pudo
+  subir la versión, mientras otra copia sí seguía conectada. Entonces la copia vieja de ese día se sigue leyendo
+  hasta que vence, **a más tardar 60 segundos**. En esa ventana nadie puede reservar dos veces el mismo espacio: la
+  restricción `EXCLUDE` rechaza la segunda reserva con 409. Lo peor que puede pasar es ver libre, por un minuto, un
+  espacio que ya no lo está.
+
+**Decisión: las copias vencen en 60 segundos.**
+- **Problema.** El vencimiento decide cuánto dura esa ventana en la falla parcial, y cuánta memoria ocupan las copias
+  de versiones viejas.
+- **Elegido.** 60 segundos. Las agendas que más se consultan se leen muchas veces por minuto, así que casi todas
+  las consultas siguen saliendo de la caché. La medición acertó en el 99,9 % de las consultas.
+- **Alternativa descartada.** Varios minutos: algunos aciertos más, pero una ventana de error más larga en esa
+  falla.
+- **Lo que se sacrifica.** Una agenda que se consulta menos de una vez por minuto se recalcula en la base en cada
+  consulta.
 
 ### Cómo se demuestra
 
-- Una prueba automatizada que consulta la disponibilidad, reserva uno de los espacios devueltos y vuelve a
-  consultar: el espacio debe aparecer tomado sin esperar a que expire nada (I8).
-- Una medición del tiempo de respuesta de RF7 antes y después de introducir la caché.
+- **Pruebas automatizadas** en `tests/integration/availability-cache.test.js`. La primera consulta es `miss` y la
+  segunda `hit`. Después de reservar, cancelar o reprogramar un espacio devuelto, la siguiente consulta vuelve a ser
+  `miss` y ya refleja el cambio, sin esperar a que expire nada (I8).
+- **Las pruebas detectan el error.** Se comprobó en una copia aislada apagando el `INCR`: fallaron justo las cinco
+  pruebas de invalidación (las dos de la caché y las tres de I7 e I8 de `availability.test.js`), y las demás
+  siguieron pasando.
+- **La respuesta sale de verdad de la caché.** Un bloqueo insertado directo en la base, sin subir la versión, no se
+  vio (`hit`) hasta que una reserva por la API subió la versión (`miss`). Por eso toda ruta que cambie una agenda,
+  incluidas las de horarios y bloqueos, debe llamar a `bumpAgendaVersion`.
+- **La medición de RF7 antes y después** está en el README, "Medición de carga de RF7". Con la caché, la base hace
+  la mitad del trabajo por consulta.
