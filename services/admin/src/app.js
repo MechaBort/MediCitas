@@ -3,6 +3,8 @@ import { pool } from '@medicitas/common/db';
 import { authenticate, identify } from '@medicitas/common/auth';
 import { toResponse } from '@medicitas/common/errors';
 import { clinicsRouter } from './routes/clinics.js';
+import { professionalsRouter } from './routes/professionals.js';
+import { servicesRouter } from './routes/services.js';
 import { usersRouter } from './routes/users.js';
 
 // La app se exporta sin escuchar en un puerto para poder probarla con supertest.
@@ -38,6 +40,8 @@ app.get('/me', protect, (req, res) => {
 
 app.use('/clinics', protect, clinicsRouter);
 app.use('/users', protect, usersRouter);
+app.use('/services', protect, servicesRouter);
+app.use('/professionals', protect, professionalsRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Ruta no encontrada' });

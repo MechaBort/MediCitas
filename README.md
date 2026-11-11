@@ -893,6 +893,92 @@ Permiso `users.manage`. Body con uno o ambos campos: `{"role": "clinic_admin" | 
 | 409 | Es el propio usuario (no puede quitarse el rol ni darse de baja), o es un profesional y se pidió cambiar su rol |
 | 502 | Se guardó en la base pero no en Keycloak; el usuario queda sin acceso hasta repetir la petición |
 
+### Catálogo de servicios (`RF3`)
+Permiso `services.manage` (administrador de clínica). Cada servicio pertenece a la clínica del token, tiene una
+duración en minutos mayor que cero (que decide el fin de cada cita reservada, I4) y requiere una especialidad del
+catálogo global.
+
+#### `GET /services/specialties`
+Devuelve el catálogo global de especialidades médicas: `[{specialtyId, specialtyName}]`.
+
+#### `GET /services` y `GET /services/{serviceId}`
+Lista los servicios de la clínica del token, o devuelve uno solo. Cada servicio:
+`{serviceId, serviceName, durationMinutes, specialtyId, specialtyName, isActive, createdAt, updatedAt}`.
+Un servicio de otra clínica responde 404, igual que uno que no existe (I5).
+
+#### `POST /services` (RF3)
+```json
+{
+  "serviceName": "Consulta cardiológica",
+  "durationMinutes": 40,
+  "specialtyId": 1
+}
+```
+| Código | Caso |
+|---|---|
+| 201 | Creado en la clínica del token. Devuelve el servicio y el header `Location` |
+| 400 | Body inválido o `durationMinutes` no positivo |
+| 404 | La especialidad indicada no existe |
+
+#### `PATCH /services/{serviceId}` (RF3)
+Body con al menos uno de `{serviceName, durationMinutes, specialtyId, isActive}`. Cambiar `durationMinutes` aplica a
+las citas nuevas; las ya reservadas conservan su periodo original (I4).
+
+| Código | Caso |
+|---|---|
+| 200 | Actualizado. Devuelve el servicio |
+| 400 | Body vacío o inválido |
+| 404 | El servicio no existe en la clínica del token (I5), o la especialidad indicada no existe |
+
+### Profesionales y servicios habilitados (`RF4`)
+Permiso `professionals.manage` (administrador de clínica). Un profesional es un usuario con rol `professional` en
+Keycloak y en `users`, más su fila 1:1 en `professionals` (`licenseNumber`), sus especialidades
+(`specialties_per_professionals`), sus servicios habilitados (`services_per_professionals`) y sus contactos
+(`professional_contacts`).
+
+#### `GET /professionals` y `GET /professionals/{professionalId}`
+Lista los profesionales de la clínica del token, o devuelve uno solo:
+`{professionalId, userId, name, lastName, role: "professional", licenseNumber, isActive, specialties: [{specialtyId, specialtyName}], services: [{serviceId, serviceName, durationMinutes, specialtyId}], contacts: [{contactId, type, value}], createdAt, updatedAt}`.
+
+#### `POST /professionals` (RF4)
+Mismos campos de cuenta que `POST /users`, más `licenseNumber`, `specialtyIds` (al menos una), `serviceIds` (opcional,
+servicios activos de la clínica cuya especialidad tenga el profesional) y `phone` (opcional):
+```json
+{
+  "username": "carlos.mena",
+  "email": "carlos.mena@example.com",
+  "name": "Carlos",
+  "lastName": "Mena",
+  "password": "contraseña-inicial",
+  "temporaryPassword": true,
+  "licenseNumber": "MED-20400",
+  "specialtyIds": [1],
+  "serviceIds": [1],
+  "phone": "+506 8888 1111"
+}
+```
+| Código | Caso |
+|---|---|
+| 201 | Creado en Keycloak y en la clínica del token. Devuelve el profesional, su `username` y el header `Location` |
+| 400 | Body inválido, o el profesional no tiene la especialidad que requiere alguno de los servicios indicados |
+| 404 | Alguna especialidad no existe, o algún servicio no existe, está inactivo o pertenece a otra clínica (I5) |
+| 409 | Ya existe un usuario con ese `username` o `email` |
+
+#### `PATCH /professionals/{professionalId}` y `PUT /professionals/{professionalId}/services` (RF4)
+- `PATCH /professionals/{professionalId}` recibe al menos uno de `{licenseNumber, specialtyIds, serviceIds, isActive}`.
+  Si cambia `isActive`, también actualiza `users` y habilita o deshabilita la cuenta en Keycloak.
+- `PUT /professionals/{professionalId}/services` recibe `{"serviceIds": [1, 2]}` y reemplaza la lista de servicios que
+  el profesional está habilitado para atender.
+- Quitar un servicio o especialidad usa baja lógica (`is_active = false`) sobre la tabla puente para no romper las
+  llaves foráneas de citas históricas.
+
+| Código | Caso |
+|---|---|
+| 200 | Actualizado. Devuelve el profesional |
+| 400 | Body vacío o inválido, o el profesional no tiene la especialidad que requiere alguno de los servicios |
+| 404 | El profesional, alguna especialidad o algún servicio no existe o pertenece a otra clínica (I5) |
+| 502 | El cambio de `isActive` se guardó en la base pero no en Keycloak; repetir la petición corrige la diferencia |
+
 ### `POST /appointments` (RF9)
 Permiso `appointments.manage` (administrador de clínica y recepción). Reserva una cita en la clínica del token.
 ```json
