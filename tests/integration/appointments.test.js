@@ -5,7 +5,7 @@
 import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { api, requireStack, token } from './helpers.js';
-import { addBlockade, addScheduleBlock, freeDay, localInstant, ownerDb } from './db.js';
+import { addBlockade, addScheduleBlock, freeDay, localInstant, ownerDb, patientsOf, professionalsOf } from './db.js';
 
 requireStack();
 const db = ownerDb();
@@ -25,24 +25,11 @@ before(async () => {
   clinicId = (await api('GET', '/me', { token: reception })).body.clinicId;
   const cartagoId = (await api('GET', '/me', { token: await token('recepcion.cartago') })).body.clinicId;
 
-  // El primer servicio activo de cada profesional activo, por clínica.
-  const offered = async (clinic) => (await db.query(`
-    SELECT DISTINCT ON (spp.professional_id)
-           spp.professional_id AS "professionalId", spp.service_id AS "serviceId", s.duration_minutes AS duration
-      FROM services_per_professionals spp
-      JOIN services s       ON s.service_id = spp.service_id AND s.is_active
-      JOIN users u          ON u.user_id = spp.professional_id AND u.is_active
-      JOIN professionals pr ON pr.user_id = u.user_id AND pr.is_active
-     WHERE spp.clinic_id = $1 AND spp.is_active
-     ORDER BY spp.professional_id, spp.service_id`, [clinic])).rows;
-  [p1, p2] = await offered(clinicId);
-  const [otherProfessional] = await offered(cartagoId);
-
-  const patientsOf = async (clinic) => (await db.query(
-    'SELECT patient_id FROM patients WHERE clinic_id = $1 AND is_active ORDER BY patient_id LIMIT 10', [clinic]))
-    .rows.map((r) => r.patient_id);
-  patients = await patientsOf(clinicId);
-  const [otherPatient] = await patientsOf(cartagoId);
+  // Las consultas al seed están en db.js, compartidas con los demás archivos de pruebas.
+  [p1, p2] = await professionalsOf(db, clinicId);
+  const [otherProfessional] = await professionalsOf(db, cartagoId);
+  patients = await patientsOf(db, clinicId);
+  const [otherPatient] = await patientsOf(db, cartagoId);
 
   notOffered = (await db.query(`
     SELECT service_id FROM services

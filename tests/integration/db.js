@@ -16,6 +16,28 @@ export function ownerDb() {
   return db;
 }
 
+// Profesionales activos de una clínica, cada uno con su primer servicio activo:
+// [{ professionalId, serviceId, duration }].
+export async function professionalsOf(db, clinicId) {
+  const { rows } = await db.query(`
+    SELECT DISTINCT ON (spp.professional_id)
+           spp.professional_id AS "professionalId", spp.service_id AS "serviceId", s.duration_minutes AS duration
+      FROM services_per_professionals spp
+      JOIN services s       ON s.service_id = spp.service_id AND s.is_active
+      JOIN users u          ON u.user_id = spp.professional_id AND u.is_active
+      JOIN professionals pr ON pr.user_id = u.user_id AND pr.is_active
+     WHERE spp.clinic_id = $1 AND spp.is_active
+     ORDER BY spp.professional_id, spp.service_id`, [clinicId]);
+  return rows;
+}
+
+// Ids de pacientes activos de una clínica (hasta 10).
+export async function patientsOf(db, clinicId) {
+  const { rows } = await db.query(
+    'SELECT patient_id FROM patients WHERE clinic_id = $1 AND is_active ORDER BY patient_id LIMIT 10', [clinicId]);
+  return rows.map((r) => r.patient_id);
+}
+
 // Un día lejano en el que ninguno de los profesionales indicados tiene horario. Cada llamada elige otro día, así
 // las pruebas no chocan con el seed ni con corridas anteriores. Devuelve 'YYYY-MM-DD'.
 export async function freeDay(db, professionalIds) {
@@ -27,6 +49,40 @@ export async function freeDay(db, professionalIds) {
                           AND s.period && tstzrange(d - interval '1 day', d + interval '2 days'))
      LIMIT 1`, [professionalIds]);
   return row.day;
+}
+
+// Un día del pasado lejano en el que esos profesionales no tienen horario, para citas que ya empezaron (RF12):
+// la API no permite reservar en el pasado, así que esas citas se preparan aquí.
+export async function freePastDay(db, professionalIds) {
+  const { rows: [row] } = await db.query(`
+    SELECT d::date::text AS day
+      FROM generate_series(current_date - 400 - (random() * 3000)::int, current_date - 4000, interval '-1 day') d
+     WHERE NOT EXISTS (SELECT 1 FROM professional_schedules s
+                        WHERE s.professional_id = ANY ($1)
+                          AND s.period && tstzrange(d - interval '1 day', d + interval '2 days'))
+     LIMIT 1`, [professionalIds]);
+  return row.day;
+}
+
+// Cita reservada creada directamente en la base (para días pasados). Los triggers igual calculan el fin con la
+// duración del servicio y exigen un bloque de horario que la contenga. Devuelve su id.
+export async function addAppointment(db, { clinicId, patientId, professionalId, serviceId, day, time }) {
+  const { rows: [row] } = await db.query(`
+    INSERT INTO appointments (clinic_id, patient_id, professional_id, service_id, period, updated_by)
+    SELECT $1, $2, $3, $4, tstzrange(($5::date + $6::time) AT TIME ZONE time_zone, NULL), 1
+      FROM clinics WHERE clinic_id = $1
+    RETURNING appointment_id`,
+    [clinicId, patientId, professionalId, serviceId, day, time]);
+  return Number(row.appointment_id);
+}
+
+// Estado actual de una cita, para verificar que una operación rechazada no la cambió.
+export async function appointmentStatus(db, appointmentId) {
+  const { rows: [row] } = await db.query(`
+    SELECT s.status_name FROM appointments a
+      JOIN appointment_statuses s ON s.appointment_status_id = a.appointment_status_id
+     WHERE a.appointment_id = $1`, [appointmentId]);
+  return row?.status_name;
 }
 
 // Instante absoluto de una hora local de la clínica (time: 'HH:MM') en un día. Devuelve un ISO 8601 en UTC.

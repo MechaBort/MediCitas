@@ -58,6 +58,21 @@ disponibilidad, citas y reportes.
 - **Lo que se sacrifica.** `agenda` concentra la mayor parte del código. Los módulos internos lo mantienen
   ordenado, y cada módulo puede convertirse en un servicio el día que haga falta.
 
+**Decisión de la rama `reservas`: los cambios de estado de una cita son rutas de acción (RF11, RF12, RF13).**
+- **Problema.** Cancelar y registrar el desenlace cambian el mismo campo, el estado, pero los permite gente
+  distinta: cancelar es de recepción y del administrador de clínica (`appointments.manage`), y el desenlace también
+  lo registra el profesional (`appointments.outcome`).
+- **Elegido.** Dos rutas: `POST /appointments/{id}/cancel` y `POST /appointments/{id}/outcome`. Cada una tiene su
+  permiso fijo y su cuerpo (el motivo, o `atendida`/`ausente`), y hace un solo `UPDATE` filtrado por la clínica del
+  token. Las reglas de las transiciones no se repiten en el código: el trigger `appointments_check_status` las
+  aplica sobre la fila ya bloqueada (`MC002` y `MC003`, los dos 409), así que dos peticiones simultáneas sobre la
+  misma cita no pueden pasar las dos.
+- **Alternativa descartada.** Un `PATCH /appointments/{id}` con `{ status }`: la ruta tendría que elegir el permiso
+  según el cuerpo, y un error ahí dejaría a un profesional cancelar. Tampoco se revisa el estado antes del `UPDATE`,
+  porque entre la lectura y la escritura otra petición podría cambiarlo.
+- **Lo que se sacrifica.** Un contrato menos "REST puro": son verbos sobre el recurso. Se propone que RF10 (reprogramar)
+  siga la misma forma, con `POST /appointments/{id}/reschedule`.
+
 ---
 
 ## 2. Estructura del repositorio

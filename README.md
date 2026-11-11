@@ -888,3 +888,24 @@ Permiso `appointments.manage` (administrador de clínica y recepción). Reserva 
 | 400 | Solicitud inválida: body inválido, inicio en el pasado, el profesional no atiende ese servicio, o la cita cae fuera de su horario o dentro de un bloqueo (I3) |
 | 404 | El paciente, el profesional o el servicio no existe, está dado de baja o es de otra clínica (I5) |
 | 409 | Espacio ya tomado: el profesional ya tiene una cita que se cruza (I1); o el paciente ya tiene otra cita a esa hora (I2) |
+
+### Cambios de estado de una cita (RF11, RF12, RF13)
+Desde `reservada` se puede pasar a `cancelada`, `atendida`, `ausente` o `reprogramada`; esos cuatro estados son
+finales y no admiten más cambios (RF13). Las dos rutas responden la cita con su estado nuevo:
+`{appointmentId, patientId, professionalId, serviceId, status, start, end, description, cancelReason, cancelledBy, cancelledAt}`.
+Al salir de `reservada`, el espacio queda libre de inmediato para otra reserva (I7).
+
+#### `POST /appointments/{id}/cancel` (RF11)
+Permiso `appointments.manage` (administrador de clínica y recepción). Body: `{"reason": "El paciente pidió cancelar"}`
+(obligatorio, hasta 500 caracteres). Queda registrado quién canceló (`cancelledBy`) y cuándo (`cancelledAt`).
+
+#### `POST /appointments/{id}/outcome` (RF12)
+Permiso `appointments.outcome` (administrador de clínica, recepción y profesional, según la matriz). Body:
+`{"outcome": "atendida"}` o `{"outcome": "ausente"}`. Solo se admite una vez pasada la hora de inicio.
+
+| Código | Caso |
+|---|---|
+| 200 | Aplicado. Devuelve la cita con su estado nuevo |
+| 400 | Body inválido (falta el motivo, desenlace distinto de `atendida` o `ausente`) o id que no es un número |
+| 404 | La cita no existe o es de otra clínica (I5) |
+| 409 | La cita ya está en un estado final (RF13), o se registra el desenlace antes de la hora de inicio (RF12) |

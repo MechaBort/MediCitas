@@ -87,3 +87,89 @@ appointmentsRouter.post('/', requirePermission('appointments.manage'), async (re
     description: body.description ?? null,
   });
 });
+
+// --- Cambios de estado: cancelar (RF11) y registrar el desenlace (RF12) -------------------------------------
+//
+// Las reglas de RF12 y RF13 las garantiza la base, en el trigger appointments_check_status: solo se sale de
+// "reservada", un estado final ya no admite cambios (MC002 → 409) y el desenlace solo se registra después de la
+// hora de inicio (MC003 → 409). Las rutas no repiten esas reglas: hacen el UPDATE y traducen el error.
+// Al salir de "reservada", la cita deja de contar para las restricciones EXCLUDE: su espacio queda libre en el
+// mismo COMMIT (I7).
+
+// appointment_status_id fijos de db/sql/03-catalogs.sql.
+const STATUS_NAME = { 1: 'reservada', 2: 'atendida', 3: 'ausente', 4: 'cancelada', 5: 'reprogramada' };
+
+const idParams = z.object({ id: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER) });
+const cancelSchema = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
+const outcomeSchema = z.object({ outcome: z.enum(['atendida', 'ausente']) }).strict();
+
+// Columnas que devuelven las rutas de cambio de estado, más los días de la agenda que ocupaba la cita.
+const RETURNING = `
+  RETURNING a.appointment_id, a.patient_id, a.professional_id, a.service_id, a.appointment_status_id,
+            lower(a.period) AS start_at, upper(a.period) AS end_at, a.appointment_description,
+            a.cancel_reason, a.cancelled_by, a.cancelled_at,
+            (lower(a.period) AT TIME ZONE c.time_zone)::date::text AS first_day,
+            ((upper(a.period) - interval '1 microsecond') AT TIME ZONE c.time_zone)::date::text AS last_day`;
+
+function toAppointment(row) {
+  return {
+    appointmentId: Number(row.appointment_id),
+    patientId: row.patient_id,
+    professionalId: row.professional_id,
+    serviceId: row.service_id,
+    status: STATUS_NAME[row.appointment_status_id],
+    start: row.start_at,
+    end: row.end_at,
+    description: row.appointment_description,
+    cancelReason: row.cancel_reason,
+    cancelledBy: row.cancelled_by,
+    cancelledAt: row.cancelled_at,
+  };
+}
+
+// Aplica un UPDATE a una cita de la clínica del token y, después del COMMIT, sube la versión de su agenda.
+// Una cita que no existe o es de otra clínica responde 404 (I5).
+async function changeStatus(req, sql, params) {
+  const { id } = parse(idParams, req.params);
+  const { clinicId, dbRole } = req.user;
+
+  const row = await withTransaction(dbRole, async (client) =>
+    (await client.query(sql, [clinicId, id, ...params])).rows[0]);
+  if (!row) {
+    throw new HttpError(404, 'Cita no encontrada');
+  }
+
+  await bumpAgendaVersion({
+    clinicId,
+    professionalId: row.professional_id,
+    firstDay: row.first_day,
+    lastDay: row.last_day,
+  });
+  return toAppointment(row);
+}
+
+// RF11: cancelar, dejando el motivo y quién canceló. Una cita en estado final no se cancela (MC002 → 409).
+appointmentsRouter.post('/:id/cancel', requirePermission('appointments.manage'), async (req, res) => {
+  const { reason } = parse(cancelSchema, req.body);
+  const appointment = await changeStatus(req, `
+    UPDATE appointments a
+       SET appointment_status_id = 4, cancel_reason = $3, cancelled_by = $4, cancelled_at = now(), updated_by = $4
+      FROM clinics c
+     WHERE a.clinic_id = $1 AND a.appointment_id = $2 AND c.clinic_id = a.clinic_id
+    ${RETURNING}`, [reason, req.user.userId]);
+  res.json(appointment);
+});
+
+// RF12: registrar el desenlace, atendida o ausente. Solo después de la hora de inicio (MC003 → 409) y solo
+// desde "reservada" (MC002 → 409). Según la matriz, también lo puede registrar el profesional.
+appointmentsRouter.post('/:id/outcome', requirePermission('appointments.outcome'), async (req, res) => {
+  const { outcome } = parse(outcomeSchema, req.body);
+  const status = outcome === 'atendida' ? 2 : 3;
+  const appointment = await changeStatus(req, `
+    UPDATE appointments a
+       SET appointment_status_id = $3, updated_by = $4
+      FROM clinics c
+     WHERE a.clinic_id = $1 AND a.appointment_id = $2 AND c.clinic_id = a.clinic_id
+    ${RETURNING}`, [status, req.user.userId]);
+  res.json(appointment);
+});

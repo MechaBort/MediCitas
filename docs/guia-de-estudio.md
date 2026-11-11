@@ -1703,6 +1703,34 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   se conecta como `mc_owner` solo para crear el bloque de horario en un día lejano y único, y para contar las citas.
   La reserva en sí siempre pasa por la API.
 
+**Cancelar y registrar el desenlace (RF11, RF12, RF13), también en la rama `reservas`** 🔴
+
+- **Dos rutas de acción, no un `PATCH` genérico.** `POST /appointments/{id}/cancel` (permiso
+  `appointments.manage`, con el motivo obligatorio) y `POST /appointments/{id}/outcome` (permiso
+  `appointments.outcome`, con `atendida` o `ausente`). Se eligieron rutas separadas porque cada una tiene su
+  permiso y su cuerpo: con un solo `PATCH { status }`, la ruta tendría que decidir el permiso según el valor del
+  cuerpo, y sería fácil que un profesional terminara cancelando. Lo que se sacrifica es un contrato menos "REST
+  puro": son verbos sobre el recurso.
+- **La ruta no repite las reglas: las garantiza la base.** Cada ruta hace un solo `UPDATE` filtrado por la clínica
+  del token, y el trigger `appointments_check_status` decide:
+  - un estado final (atendida, ausente, cancelada, reprogramada) no admite cambios → `MC002` → 409 (RF13);
+  - el desenlace antes de la hora de inicio → `MC003` → 409 (RF12);
+  - si el `UPDATE` no encuentra la cita, porque no existe o es de otra clínica, responde 404 (I5).
+
+  Revisar el estado antes en el código sería una carrera: entre la lectura y el `UPDATE` otra recepcionista podría
+  cancelar la misma cita. El trigger corre sobre la fila ya bloqueada por el `UPDATE`, así que no hay ventana.
+- **Cancelar libera el espacio en el mismo COMMIT (I7).** Las restricciones `EXCLUDE` solo cuentan las citas
+  reservadas; al pasar a cancelada, la cita deja de contar. La prueba lo comprueba reservando de nuevo el mismo
+  espacio para otro paciente (201).
+- **Las dos rutas suben la versión de la agenda después del COMMIT,** con `bumpAgendaVersion`, porque cambian los
+  huecos libres de ese día (I8). La función `changeStatus` comparte esa parte entre las dos rutas.
+- **El profesional registra el desenlace de cualquier cita de su clínica,** no solo de las suyas. La matriz da
+  `appointments.outcome` al perfil profesional sin la variante "solo las propias" que sí tienen los horarios
+  (`schedules.manage_own`). Se respetó la matriz tal como está.
+- **Las pruebas (`tests/integration/appointment-status.test.js`).** Una cita futura se reserva por la API; una que
+  ya empezó (para RF12) se prepara en la base con `addAppointment` en un día del pasado lejano (`freePastDay`),
+  porque la API no permite reservar en el pasado. Los triggers igual corren sobre ese `INSERT`.
+
 ### 8.4 El gateway 🔴
 
 El **gateway** es la única puerta de entrada de la API: un Nginx que escucha en el puerto 3000 y reenvía cada
@@ -1758,9 +1786,9 @@ por petición.
 | RF8 | Disponibilidad por servicio en un rango | ◐ índice listo | ✘ |
 | RF9 | Reservar | ✔ `EXCLUDE` y triggers | ✔ `POST /appointments` (servicio `agenda`), con la prueba de carrera (sección 8.3) |
 | RF10 | Reprogramar | ✔ `rescheduled_from_id`; probado en el seed | ✘ |
-| RF11 | Cancelar con motivo | ✔ `ck_appointments_cancellation` | ✘ |
-| RF12 | Desenlace después del inicio | ✔ trigger (`MC003`) | ✘ |
-| RF13 | Transiciones de estado | ✔ trigger (`MC002`) | ✘ |
+| RF11 | Cancelar con motivo | ✔ `ck_appointments_cancellation` | ✔ `POST /appointments/{id}/cancel`, con pruebas |
+| RF12 | Desenlace después del inicio | ✔ trigger (`MC003`) | ✔ `POST /appointments/{id}/outcome`, con pruebas |
+| RF13 | Transiciones de estado | ✔ trigger (`MC002`) | ✔ las dos rutas anteriores traducen `MC002` a 409, con pruebas |
 | RF14 | Pacientes | ✔ `patients`, `patient_contacts` | ✘ |
 | RF15 | Nota clínica del profesional que atendió | ◐ tabla y permisos; "el que atendió" lo filtra la API | ✘ |
 | RF16 | Historial del paciente | ✔ índice | ✘ |
