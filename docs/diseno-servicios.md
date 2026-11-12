@@ -586,6 +586,21 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   copia aislada: con ella, siempre hay una sola reserva; sin ella, la API concedió las dos (`[201, 201]`) y, con diez
   clientes, las diez. La prueba falla si se quita lo que garantiza I1. La salida de `npm test` sirve así de base para el informe de pruebas que pide el enunciado.
 
+**Decisión de las pruebas de fuga (`test/tenant-isolation`, I5): probar las tres capas de aislamiento multi-tenant.**
+- **Problema.** Con columna discriminadora (`clinic_id`), el aislamiento entre clínicas (`I5`) se apoya en tres capas:
+  (1) `clinicId` sale siempre del token y se rechaza en parámetros/body; (2) toda ruta filtra por `req.user.clinicId`
+  y responde `404` idéntico a un id inexistente ante recursos o combinaciones de otra clínica; y (3) las llaves
+  foráneas compuestas `(clinic_id, id)` impiden en el motor que una fila apunte a un registro de otra clínica.
+- **Elegido.** `tests/integration/tenant-isolation.test.js` verifica las tres capas de extremo a extremo entre las
+  tres clínicas del seed (San José, Cartago y Bogotá): partición estricta de listados, respuestas `404`
+  indistinguibles de un id inexistente, rechazo de combinaciones cruzadas en reservas y cambios de estado, rechazo
+  `400` al inyectar `clinicId` o `clinic_id` en body/query, y verificación con `SAVEPOINT` bajo `SET LOCAL ROLE` de
+  que PostgreSQL aborta con `23503` cualquier inserción que mezcle clínicas en las tablas hijas.
+- **Alternativa descartada.** Probar únicamente el `404` por ruta: no demostraría que la tercera capa (las FKs
+  compuestas en la base) frena una referencia cruzada aunque el código del backend tuviera un error.
+- **Lo que se sacrifica.** Una prueba adicional contra la base en el archivo de integración, que se deshace con
+  `ROLLBACK` sin dejar datos en las tablas.
+
 ---
 
 ## 10. Orden de implementación
