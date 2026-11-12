@@ -31,9 +31,10 @@ spec:
 
   postgresql:
     parameters:
-      # 100, como en Compose: alcanza para los pools de PgBouncer (k8s/12-postgres-pooler.yaml), Keycloak y
-      # el margen del superusuario. Ver la cuenta en docs/diseno-servicios.md §7.
-      max_connections: "100"
+      # 150: las conexiones reales de los Poolers (agenda 36 en k8s/13-postgres-pooler-agenda.yaml; admin y clinical
+      # 20 cada uno en k8s/12-postgres-pooler.yaml), Keycloak (20) y margen para el operador y el superusuario. Compose
+      # sigue con 100, porque ahí cada copia se conecta directo. Ver la cuenta en docs/diseno-servicios.md §7.
+      max_connections: "150"
 
   storage:
     size: 1Gi

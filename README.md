@@ -45,7 +45,7 @@ Los manifiestos están en `k8s/`, numerados en el orden en que se aplican. Las d
 |---|---|---|
 | 1 | PostgreSQL 18 con el operador CloudNativePG (`Cluster`), su inicialización con el mismo `db/init/00-init.sh` de Compose (Job `db-init`) y PgBouncer en modo transacción (`Pooler`) | Hecho |
 | 2 | Los servicios `admin`, `agenda` y `clinical`, el gateway, Keycloak y Redis, con las imágenes construidas dentro de minikube y un Secret por componente | Hecho |
-| 3 | El HPA de `agenda` | Pendiente |
+| 3 | `metrics-server` y el HPA de `agenda` (entre 2 y 6 copias según la CPU), con un PgBouncer propio para `agenda` | Hecho |
 
 Para usar la API desde esta máquina, se abren los puertos en otra terminal. Son los mismos que usa Compose, así que
 **no puede estar Compose arriba a la vez**:
@@ -62,6 +62,18 @@ Para correr **la misma suite de pruebas dentro del clúster**, contra el gateway
 ```bash
 ./k8s/run-tests.sh
 ```
+
+Para ver el **HPA** escalar `agenda` bajo carga: k6 corre `tests/load/availability.js` dentro del clúster y, cada 10 s,
+el script muestra la CPU y las copias de `agenda` mientras suben y vuelven a bajar.
+
+```bash
+./k8s/load-test.sh                       # 100 usuarios durante 3 minutos
+VUS=50 DURATION=2m ./k8s/load-test.sh
+kubectl -n medicitas get hpa agenda -w   # en otra terminal, en vivo
+```
+
+Los resultados y por qué `agenda` tiene su propio PgBouncer están en
+[docs/diseno-servicios.md](docs/diseno-servicios.md), sección 7, "Decisiones del paso 3".
 
 Para revisar el paso 1:
 

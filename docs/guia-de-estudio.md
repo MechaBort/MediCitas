@@ -2051,12 +2051,35 @@ kubectl -n medicitas get pods -o wide                     # 2 copias de agenda y
 kubectl -n medicitas delete pod -l app=agenda --wait=false; kubectl -n medicitas get pods -w   # Kubernetes las recrea
 ```
 
+### 9b.4 Paso 3: el HPA de `agenda` 🔴
+
+El **HPA** (HorizontalPodAutoscaler) mira la CPU que usan las copias de `agenda`, medida por `metrics-server`, y la
+compara con la que cada una tiene reservada (250m). Si el promedio pasa del 70 %, agrega copias, hasta 6; cuando la
+carga baja, espera 60 s y las quita de a una, hasta volver a 2.
+
+**Lo que se aprendió al medirlo.** La primera vez, con un solo PgBouncer compartido, 6 copias atendían **menos** que
+2. Cada consulta de RF7 abre una transacción en la base, aunque los huecos salgan de Redis, porque valida el
+profesional y el servicio. Esa transacción hace 4 viajes de ida y vuelta, y las 20 conexiones reales de `agenda` se
+quedaban ocupadas esperando: más copias solo alargaban la fila. La solución fue darle a `agenda` su propio PgBouncer,
+con 36 conexiones reales: 4 menos que su `CONNECTION LIMIT` de 40, para dejar margen. Es un buen ejemplo para la defensa: **escalar copias solo
+sirve si el siguiente cuello de botella tiene espacio**.
+
+**E42. Ver el HPA en acción:**
+
+```bash
+./k8s/load-test.sh                        # la CPU sube, las copias pasan de 2 a 6 y después vuelven a bajar
+kubectl -n medicitas get hpa agenda       # TARGETS muestra la CPU media contra el 70 % objetivo
+kubectl -n medicitas top pods             # la CPU de cada pod (metrics-server)
+```
+
 **Preguntas de control.**
 - ¿Por qué la base se inicializa con un Job y no con el SQL de inicialización que ofrece el operador?
 - Si `agenda` escala a 20 copias, ¿cuántas conexiones reales abre contra PostgreSQL? ¿Por qué?
 - ¿Qué pasaría con PgBouncer en modo transacción si el código usara `SET ROLE` sin `LOCAL`?
 - ¿Por qué la sonda de vida de los servicios no usa `/health`?
 - Si se borra un pod de `agenda`, ¿qué hace Kubernetes y por qué no se corta el servicio?
+- ¿Por qué el Deployment de `agenda` no fija `replicas`?
+- ¿Por qué con un solo PgBouncer compartido escalar `agenda` a 6 copias la hacía más lenta, y cómo se arregló?
 
 ## Parte 10. Estado de los requisitos
 

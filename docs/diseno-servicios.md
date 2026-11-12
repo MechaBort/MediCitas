@@ -589,6 +589,72 @@ solo comando.
 - **Alternativa descartada.** Un Ingress con un dominio propio: exige configurar DNS o `/etc/hosts`, y cambiaría el
   `iss` de los tokens.
 
+### Decisiones del paso 3 (`feat/k8s-hpa`, 2026-11-12)
+
+**Decisión: el HPA de `agenda` va de 2 a 6 copias, según la CPU (`k8s/50-agenda-hpa.yaml`).**
+- **Cómo funciona.** El HPA (HorizontalPodAutoscaler) compara la CPU que usan las copias, medida por
+  `metrics-server`, con la CPU que cada una tiene reservada (250m, su *request*). Si el promedio pasa del 70 %,
+  agrega copias; si baja, las quita.
+- **Mínimo 2,** para que siempre quede una copia atendiendo si otra muere o se reemplaza.
+- **Máximo 6, por la CPU.** minikube tiene 6 CPUs para todo, y más copias de `agenda` solo competirían con la base.
+  Las conexiones no son el límite: los clientes de PgBouncer son baratos (1000 por copia). En un clúster real, el
+  máximo se sube junto con los nodos.
+- **Sube rápido y baja con calma.** Puede duplicar las copias cada 15 s. Para bajar, espera 60 s de baja carga y
+  quita una copia cada 20 s, para no agregar y quitar copias ante una carga que va y viene. El valor de fábrica son
+  300 s; con 60 s se ve en la demostración.
+- **El Deployment de `agenda` ya no fija `replicas`.** Si lo hiciera, cada `kubectl apply` devolvería el número a
+  ese valor y pelearía con el HPA. La primera vez que se aplica el cambio, `agenda` queda unos segundos en 1 copia,
+  hasta que el HPA la sube a 2.
+
+**Hallazgo de la medición: con un solo PgBouncer compartido, escalar empeoraba las cosas.**
+- **Qué se midió.** Con `k8s/load-test.sh` (k6 dentro del clúster, 100 usuarios simultáneos sobre RF7, 60 s), con
+  el pool de 10 conexiones reales por copia de PgBouncer:
+
+  | Copias fijas de `agenda` | Consultas por segundo | p95 |
+  |---|---|---|
+  | 2 | ~752 | 194 ms |
+  | 6 | ~558 | 346 ms |
+
+- **Por qué.** `agenda` usaba sus 20 conexiones reales, y la mayoría estaba en estado *idle in transaction*: la
+  transacción abierta, esperando la siguiente instrucción de `agenda`. Cada consulta de RF7 abre una transacción
+  aunque los huecos salgan de la caché, porque valida el profesional y el servicio en la base. Eso son 4 viajes de
+  ida y vuelta: `BEGIN`, `SET LOCAL ROLE`, la consulta y `COMMIT`. Las 20 conexiones se llenaban por **latencia**, no
+  por trabajo de la base, y agregar copias de `agenda` solo alargaba la fila frente a PgBouncer.
+- **Prueba de la causa.** Con 20 conexiones por copia de PgBouncer, las mismas 6 copias atendieron ~793 por segundo
+  (p95 213 ms).
+
+**Decisión: un Pooler propio para `agenda`, con 18 conexiones reales por copia (`k8s/13-postgres-pooler-agenda.yaml`).**
+- **Por qué no subir el pool del Pooler compartido.** `admin` y `clinical` también podrían abrir 2 × 20 = 40
+  conexiones reales, el doble de su `CONNECTION LIMIT`, y bajo carga fallarían.
+- **Elegido.** `agenda` usa `medicitas-db-pooler-agenda`, con 2 × 18 = 36 conexiones reales. `admin` y `clinical`
+  siguen en `medicitas-db-pooler-rw`, con 2 × 10 = 20 cada uno.
+- **Por qué 18 y no 20.** Con 2 × 20 = 40, justo el `CONNECTION LIMIT`, no quedaba margen. En la medición, una sola
+  conexión sobrante de `mc_agenda_svc` en el Pooler compartido hizo fallar al nuevo con `too many connections for role`
+  (53300), y la API respondió 500 en 3 de 134 429 consultas. Con 36 quedan 4 de margen. **Regla:** el pool nunca debe
+  igualar el `CONNECTION LIMIT`; siempre tiene que quedar margen.
+- **`max_connections` sube de 100 a 150,** solo en Kubernetes. La cuenta: 36 (`agenda`) + 20 (`admin`) + 20
+  (`clinical`) + 20 (Keycloak) = 96, más margen para el operador y el superusuario. Compose sigue con 100, porque
+  ahí cada copia se conecta directo.
+- **Lo que se sacrifica.** Dos Poolers más que mantener, y algo más de memoria en PostgreSQL por las conexiones
+  extra.
+- **Mejora que queda para después.** Juntar `BEGIN` y `SET LOCAL ROLE` en un solo viaje dentro de `withTransaction`
+  (`packages/common/src/db.js`) le quitaría un 25 % de los viajes a cada consulta. No se hizo ahora porque ese archivo
+  lo usan todos los servicios, y el código ya está congelado para el sábado.
+
+**Resultado con el HPA y el Pooler propio:** con `./k8s/load-test.sh` (100 usuarios durante 3 minutos, 2026-11-12):
+  - el HPA subió `agenda` de 2 a 4 copias y de 4 a 6 en unos 30 s, cuando la CPU pasó del 300 % de lo reservado;
+  - al terminar la carga, esperó 60 s y quitó una copia cada 20 s;
+  - k6 hizo 135 577 consultas, **todas correctas**, a ~753 por segundo, con un p95 de 200 ms y el 99,89 % servido desde
+    la caché;
+  - PostgreSQL no rechazó ni una conexión por límite (`too many connections`);
+  - y la suite completa pasó 163 de 163 dentro del clúster.
+
+**Lo que mide y lo que no.** En minikube, todo corre en una laptop de 8 núcleos que comparte la CPU con k6, la base y
+lo demás. Las cifras sirven para comparar entre sí, no como la capacidad de un clúster real. Lo que esta medición
+demuestra es el **mecanismo**: el HPA detecta la carga, agrega copias y las quita cuando la carga baja, sin que el
+cuello de botella se mueva a las conexiones de la base. Llegar a la meta de 3 300 consultas por segundo exige más
+nodos, no más copias en un solo nodo.
+
 ---
 
 ## 8. Caché de disponibilidad

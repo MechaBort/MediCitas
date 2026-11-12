@@ -1,0 +1,30 @@
+# PgBouncer propio de agenda (paso 3): el mismo Pooler que k8s/12-postgres-pooler.yaml, pero con 18 conexiones reales
+# por copia en vez de 10.
+#
+# Por qué un Pooler aparte: la medición del paso 3 (docs/diseno-servicios.md §7) mostró que, con 10 por copia, las 20
+# conexiones reales de agenda se llenaban ("idle in transaction": cada consulta hace 4 viajes de ida y vuelta, BEGIN,
+# SET LOCAL ROLE, la consulta y COMMIT), y que cuando el HPA subía agenda a 6 copias el sistema atendía MENOS que con 2
+# (558 contra 752 consultas por segundo). Con 20 por copia, las mismas 6 copias atendieron ~793 por segundo.
+#
+# No se sube el pool del Pooler compartido porque admin y clinical también podrían abrir 2 × 20 = 40 conexiones reales,
+# el doble de su CONNECTION LIMIT (20). Con un Pooler propio, agenda llega a 2 × 18 = 36, y los demás siguen con
+# 2 × 10 = 20.
+#
+# 18 y no 20: con 2 × 20 = 40, justo el CONNECTION LIMIT de mc_agenda_svc, no quedaba margen. Una sola conexión más de
+# ese usuario (una que sobra del Pooler compartido, o un psql de diagnóstico) hacía fallar al Pooler con "too many
+# connections for role" (53300), y la API respondía 500. Se midió el 2026-11-12. Con 36 quedan 4 de margen.
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: medicitas-db-pooler-agenda
+  namespace: medicitas
+spec:
+  cluster:
+    name: medicitas-db
+  type: rw
+  instances: 2
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      default_pool_size: "18"
+      max_client_conn: "1000"

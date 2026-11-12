@@ -1,0 +1,29 @@
+# Prueba de carga de RF7 DENTRO del clúster, contra el gateway de Kubernetes: el mismo tests/load/availability.js que se
+# usa con Compose (README, "Medición de carga de RF7"), cargado como ConfigMap. La lanza k8s/load-test.sh, que también
+# registra cuántas copias de agenda pone el HPA durante la prueba. __VUS__ y __DURATION__ los reemplaza el script.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load
+  namespace: medicitas
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: k6
+          image: grafana/k6:1.3.0
+          args: ["run", "--quiet", "/scripts/availability.js"]
+          env:
+            - { name: API_URL, value: "http://gateway:3000" }
+            - { name: KEYCLOAK_URL, value: "http://keycloak:8080" }
+            - { name: VUS, value: "__VUS__" }
+            - { name: DURATION, value: "__DURATION__" }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts, readOnly: true }
+          resources:
+            requests: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: scripts
+          configMap: { name: load-scripts }

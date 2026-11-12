@@ -11,7 +11,9 @@
 # Pasos (docs/diseno-servicios.md §7):
 #   1. PostgreSQL con CloudNativePG, su inicialización y PgBouncer.
 #   2. Imágenes de los servicios, Redis, Keycloak, admin, agenda, clinical y el gateway.
-#   3. HPA de agenda.                                                         <- etapa siguiente
+#   3. metrics-server y el HPA de agenda (entre 2 y 6 copias según la CPU).
+#
+# La prueba de carga que muestra el escalado: ./k8s/load-test.sh
 #
 # Después: ./k8s/run-tests.sh corre npm test dentro del clúster, y la API se abre con
 #   kubectl -n medicitas port-forward svc/gateway 3000:3000   y   kubectl -n medicitas port-forward svc/keycloak 8080:8080
@@ -92,13 +94,16 @@ if ! kubectl -n "$NAMESPACE" wait job/db-init --for=condition=Complete --timeout
 fi
 
 step "PgBouncer (Pooler)"
-kubectl apply -f k8s/12-postgres-pooler.yaml
-# El operador crea un Deployment con el mismo nombre que el Pooler.
-for attempt in $(seq 1 30); do
-  kubectl -n "$NAMESPACE" get deployment/medicitas-db-pooler-rw >/dev/null 2>&1 && break
-  sleep 2
+# Uno compartido por admin y clinical, y otro propio de agenda, con más conexiones reales.
+kubectl apply -f k8s/12-postgres-pooler.yaml -f k8s/13-postgres-pooler-agenda.yaml
+# El operador crea un Deployment con el mismo nombre que cada Pooler.
+for pooler in medicitas-db-pooler-rw medicitas-db-pooler-agenda; do
+  for attempt in $(seq 1 30); do
+    kubectl -n "$NAMESPACE" get "deployment/$pooler" >/dev/null 2>&1 && break
+    sleep 2
+  done
+  kubectl -n "$NAMESPACE" rollout status "deployment/$pooler" --timeout=300s
 done
-kubectl -n "$NAMESPACE" rollout status deployment/medicitas-db-pooler-rw --timeout=300s
 
 # --- Paso 2: servicios, gateway, Keycloak y Redis -----------------------------------------------------------------
 step "Imágenes de los servicios y de las pruebas (dentro de minikube)"
@@ -151,6 +156,12 @@ step "Gateway"
 CONFIG_HASH=$(sha256sum gateway/nginx.conf | cut -c1-12)
 sed "s/__CONFIG_HASH__/${CONFIG_HASH}/" k8s/40-gateway.yaml | kubectl apply -f -
 
+# --- Paso 3: HPA de agenda -----------------------------------------------------------------------------------------
+step "HPA de agenda"
+# metrics-server mide la CPU de cada pod; sin él, el HPA no tiene con qué decidir.
+minikube addons enable metrics-server >/dev/null
+kubectl apply -f k8s/50-agenda-hpa.yaml
+
 step "Esperando a que todo esté listo"
 kubectl -n "$NAMESPACE" rollout status deployment/redis --timeout=180s
 kubectl -n "$NAMESPACE" rollout status deployment/keycloak --timeout=420s
@@ -159,7 +170,7 @@ for d in admin agenda clinical gateway; do
 done
 
 step "Listo"
-kubectl -n "$NAMESPACE" get cluster,pooler,deployments,pods
+kubectl -n "$NAMESPACE" get cluster,pooler,deployments,hpa,pods
 cat <<EOF
 
 Para usar la API desde esta máquina (en otra terminal; no a la vez que Compose, que usa los mismos puertos):
@@ -167,4 +178,6 @@ Para usar la API desde esta máquina (en otra terminal; no a la vez que Compose,
   kubectl -n $NAMESPACE port-forward svc/keycloak 8080:8080
 Para correr la suite de pruebas dentro del clúster:
   ./k8s/run-tests.sh
+Para ver el HPA escalar agenda bajo carga:
+  ./k8s/load-test.sh
 EOF
