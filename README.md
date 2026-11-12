@@ -1429,6 +1429,39 @@ Lectura (`GET /patients`, `GET /patients/genders`, `GET /patients/{patientId}`):
 | 404 | El paciente no existe o pertenece a otra clínica (I5) |
 | 409 | Ya existe un paciente con esa `identification` en la misma clínica (`uq_patients_clinic_identification`) |
 
+### Notas clínicas: `/clinical-notes` (RF15, RF18)
+
+**Quién puede usarlas.** Solo los profesionales, con el permiso `clinical_notes.write_own`, y únicamente sobre las
+citas que **ellos mismos atendieron**, como pide la matriz ("solo de citas propias"). Recepción y el administrador de la
+clínica reciben 403. Para otro profesional, la nota de una cita ajena responde 404, igual que una que no existe (I5).
+
+**Bitácora (RF18).** Cada creación, lectura y corrección deja una fila en `audit_logs`, en la misma transacción. Esa
+fila registra quién, sobre cuál paciente, qué hizo y cuándo, **nunca el texto de la nota**.
+
+Cada nota se responde así:
+`{clinicalNoteId, appointmentId, patientId, text, createdAt, updatedAt}`.
+
+#### `POST /clinical-notes` (RF15)
+```json
+{ "appointmentId": 812, "text": "Dolor lumbar leve. Reposo y control en dos semanas." }
+```
+`text` lleva entre 1 y 10 000 caracteres. La cita tiene que estar **atendida**, y cada cita tiene una sola nota.
+
+#### `GET /clinical-notes/{id}` y `GET /clinical-notes?appointmentId=…` (RF15)
+Devuelven la nota por su id o por su cita. Como cada cita tiene una sola nota, buscarla por la cita sirve para abrirla
+desde la agenda. Cada lectura queda registrada en la bitácora.
+
+#### `PATCH /clinical-notes/{id}` (RF15)
+Recibe `{ "text": "…" }`. Solo el autor corrige su nota, y cada corrección queda registrada en la bitácora.
+
+| Código | Caso |
+|---|---|
+| 200 / 201 | Nota leída, corregida o creada; la creación devuelve el header `Location` |
+| 400 | Cuerpo o parámetros inválidos: sin `text`, `text` vacío o de más de 10 000 caracteres, ids inválidos o un campo que no se admite, como `clinicId` |
+| 403 | El rol no es `professional` |
+| 404 | La cita o la nota no existe, es de otra clínica o es de una cita de otro profesional (I5) |
+| 409 | La cita no está atendida, o ya tiene una nota |
+
 ### `GET /agenda?date=…` (RF20)
 Permiso `agenda.read` (administrador de clínica, recepción y profesional). La agenda del día: las citas que empiezan
 ese día en la hora local de la clínica, **en todos los estados** (también canceladas y reprogramadas), ordenadas por
