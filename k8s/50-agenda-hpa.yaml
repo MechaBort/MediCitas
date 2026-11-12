@@ -1,0 +1,46 @@
+# HPA (HorizontalPodAutoscaler) de agenda: agrega o quita copias según la CPU que usan (paso 3,
+# docs/diseno-servicios.md §7). metrics-server mide la CPU de cada pod; el HPA la compara con la request de CPU del
+# contenedor (250m en k8s/31-agenda.yaml) y calcula cuántas copias hacen falta para quedar cerca del objetivo.
+#
+# Por qué solo agenda: es el servicio de la consulta más frecuente (RF7) y de la reserva. admin y clinical tienen poca
+# demanda (docs/diseno-servicios.md §1).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agenda
+  namespace: medicitas
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agenda
+  # Mínimo 2: si una copia muere o se reemplaza, siempre queda otra atendiendo.
+  minReplicas: 2
+  # Máximo 6. Dos topes lo fijan:
+  # - Conexiones: no es el límite. Cada copia abre hasta 10 conexiones contra PgBouncer, que acepta 1000, y las
+  #   conexiones reales a PostgreSQL quedan topadas en 20 para mc_agenda_svc sin importar cuántas copias haya
+  #   (k8s/12-postgres-pooler.yaml).
+  # - CPU: sí es el límite. minikube tiene 6 CPUs para todo (PostgreSQL, Keycloak, PgBouncer, el gateway y las
+  #   pruebas de carga). 6 copias × 250m = 1,5 CPUs reservadas para agenda; más copias solo competirían por la CPU
+  #   con la base, que con la caché ya es el recurso que se satura (README, "Medición de carga de RF7").
+  # En un clúster real, el máximo se sube junto con los nodos.
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 70 % de la request (≈175m por copia): deja margen para absorber un pico mientras arranca otra copia.
+          averageUtilization: 70
+  behavior:
+    scaleUp:
+      # Sube rápido: hasta duplicar las copias cada 15 s si la carga lo pide.
+      policies:
+        - { type: Percent, value: 100, periodSeconds: 15 }
+    scaleDown:
+      # Baja con calma: espera 60 s de baja carga antes de quitar copias (el valor de fábrica es 300 s), para no
+      # quitar y volver a agregar copias ante una carga que va y viene. 60 s alcanzan para verlo en la demostración.
+      stabilizationWindowSeconds: 60
+      policies:
+        - { type: Pods, value: 1, periodSeconds: 20 }

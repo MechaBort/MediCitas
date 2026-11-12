@@ -24,9 +24,9 @@ spec:
   pgbouncer:
     poolMode: transaction
     parameters:
-      # Conexiones reales por cada par (usuario, base) y por cada copia de PgBouncer. Con 2 copias, cada usuario de
-      # servicio usa como máximo 2 × 10 = 20 conexiones reales: cabe en los CONNECTION LIMIT de db/init/00-init.sh
-      # (admin 20, agenda 40, clinical 20). En total, 60 de las 100 de max_connections; el resto queda para Keycloak.
+      # Conexiones reales por cada par (usuario, base) y por cada copia de PgBouncer. Con 2 copias, admin y clinical
+      # usan como máximo 2 × 10 = 20 conexiones reales, su CONNECTION LIMIT (db/init/00-init.sh). agenda tiene su propio
+      # Pooler con más conexiones (k8s/13-postgres-pooler-agenda.yaml), porque en el paso 3 este se le quedaba corto.
       default_pool_size: "10"
       # Conexiones de clientes (las copias de los servicios) que acepta cada PgBouncer. Son baratas: 1000 alcanzan
       # para 100 copias de agenda con su pool de 10.

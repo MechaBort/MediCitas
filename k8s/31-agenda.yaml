@@ -1,12 +1,14 @@
-# Servicio agenda (RF5–RF13, RF16, RF20, RF21): la consulta más frecuente (RF7) y la reserva. Alta demanda: empieza
-# con dos copias, y en el paso 3 el HPA las aumenta según la CPU. Ver los comentarios comunes en k8s/30-admin.yaml.
+# Servicio agenda (RF5–RF13, RF16, RF20, RF21): la consulta más frecuente (RF7) y la reserva. Alta demanda: cuántas
+# copias corren lo decide el HPA (k8s/50-agenda-hpa.yaml), entre 2 y 6 según la CPU. Ver los comentarios comunes en
+# k8s/30-admin.yaml.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agenda
   namespace: medicitas
 spec:
-  replicas: 2
+  # Sin "replicas": el número de copias es del HPA. Si se fijara aquí, cada kubectl apply lo devolvería a ese valor y
+  # pelearía con el HPA.
   selector:
     matchLabels: { app: agenda }
   template:
@@ -24,7 +26,8 @@ spec:
             - secretRef: { name: agenda-env }
           env:
             - { name: PORT, value: "3000" }
-            - { name: PGHOST, value: medicitas-db-pooler-rw }
+            # Su propio PgBouncer, con más conexiones reales que el compartido (k8s/13-postgres-pooler-agenda.yaml).
+            - { name: PGHOST, value: medicitas-db-pooler-agenda }
             - { name: PGPORT, value: "5432" }
             - { name: PGDATABASE, value: medicitas }
             - { name: PGUSER, value: mc_agenda_svc }
