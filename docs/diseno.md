@@ -70,9 +70,12 @@ las restricciones de la base**:
   profesional y del paciente. Si dos reservas se solapan, la segunda espera a la primera y falla con `23P01`, y la API
   responde 409. **Siempre hay exactamente una ganadora**, sin depender del nivel de aislamiento.
 - **I3,** dentro del horario: un trigger que valida el horario y los bloqueos, y que bloquea los bloques de horario
-  con `FOR SHARE` hasta el COMMIT.
+  con `FOR NO KEY UPDATE` hasta el COMMIT. Así nadie los recorta durante la reserva, y las reservas del mismo bloque
+  **hacen fila**: cada una encuentra a la ganadora ya confirmada y recibe 409 al instante. Sin esa fila, diez reservas
+  simultáneas se bloqueaban en ciclo dentro de la revisión del `EXCLUDE` y algunas terminaban en 500.
 - **RF10,** reprogramar: una sola transacción que pasa la original a "reprogramada" e inserta la nueva. Si dos
-  reprogramaciones cruzadas provocan un deadlock (`40P01`), `withTransaction` reintenta la transacción completa.
+  reprogramaciones cruzadas provocan un deadlock (`40P01`), `withTransaction` reintenta la transacción completa,
+  hasta 5 veces y con una espera al azar entre intentos.
 
 **Trade-offs, es decir, lo que se descartó y por qué:**
 - **Revisar con un `SELECT` antes del `INSERT`:** no funciona, porque dos transacciones pueden leer "libre" a la vez.
@@ -80,8 +83,11 @@ las restricciones de la base**:
   positivos, y obliga a reintentar en todo el sistema.
 - **`SELECT … FOR UPDATE` sobre el profesional:** funciona, pero depende de que todo camino del código recuerde
   bloquear, y serializa reservas que ni siquiera se solapan.
-- **Lo que se sacrifica con la opción elegida:** la API depende de los nombres de las restricciones para distinguir
-  los conflictos (`EXCLUSION_ERRORS` en `packages/common/src/errors.js`).
+- **Lo que se sacrifica con la opción elegida:**
+  - la API depende de los nombres de las restricciones para distinguir los conflictos (`EXCLUSION_ERRORS` en
+    `packages/common/src/errors.js`);
+  - las reservas del mismo profesional sobre el mismo bloque de horario se ejecutan una después de otra, aunque no se
+    solapen. Es el precio de que no se bloqueen en ciclo, y dura milisegundos.
 
 El detalle está en el [README, "Concurrencia y nivel de aislamiento"](../README.md#concurrencia-y-nivel-de-aislamiento),
 y la prueba de carrera en el [informe de pruebas](informe-pruebas.md), sección 4.

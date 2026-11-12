@@ -540,12 +540,22 @@ CREATE TRIGGER trg_appointments_10_set_period
 -- range_agg une los bloques contiguos (08:00–12:00 + 12:00–16:00), así una cita
 -- de 11:45 a 12:15 se acepta.
 --
--- Concurrencia: los bloques de horario usados se bloquean FOR SHARE hasta el commit,
--- de modo que nadie puede borrarlos ni recortarlos mientras la reserva no termine
--- (ver professional_schedules_guard). Un bloqueo (blockade) creado al mismo tiempo
--- no se impide: RF6 dice que un bloqueo no cancela citas, las deja como conflicto.
+-- Concurrencia: los bloques de horario usados se bloquean FOR NO KEY UPDATE hasta el
+-- commit, por dos motivos:
+-- 1. Nadie puede borrarlos ni recortarlos mientras la reserva no termine (ver
+--    professional_schedules_guard).
+-- 2. Las reservas del mismo profesional sobre el mismo bloque hacen fila. Sin esa fila,
+--    varias reservas simultáneas al mismo espacio llegaban a la vez a la restricción
+--    EXCLUDE, que hace que cada una espere a las otras que siguen en curso: se esperaban
+--    en ciclo y PostgreSQL abortaba por deadlock, una por segundo (deadlock_timeout).
+--    Con diez a la vez, los reintentos se agotaban. Con la fila, la primera confirma y
+--    cada una de las siguientes encuentra a la ganadora ya confirmada: 23P01 al instante.
+--    La garantía de una sola ganadora sigue siendo el EXCLUDE; el candado solo ordena.
+--    Antes era FOR SHARE, que no hace esperar a otra reserva.
+-- Un bloqueo (blockade) creado al mismo tiempo no se impide: RF6 dice que un bloqueo no
+-- cancela citas, las deja como conflicto.
 --
--- SECURITY DEFINER: FOR SHARE exige permiso UPDATE sobre la tabla, que recepción no
+-- SECURITY DEFINER: FOR NO KEY UPDATE exige permiso UPDATE sobre la tabla, que recepción no
 -- tiene; la función corre como su dueño (mc_owner) con un search_path fijo. En una
 -- función SECURITY DEFINER ese search_path fijo es obligatorio: si dependiera del que
 -- llama, alguien podría hacerle leer una tabla falsa con el mismo nombre.
@@ -558,7 +568,7 @@ BEGIN
        FROM professional_schedules
       WHERE professional_id = NEW.professional_id
         AND period && NEW.period
-        FOR SHARE;
+        FOR NO KEY UPDATE;
 
     SELECT range_agg(period) INTO v_working
       FROM professional_schedules

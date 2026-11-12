@@ -106,21 +106,25 @@ test('RF19: el rango de fechas incluye el día de hoy en la hora de la clínica,
 });
 
 test('RF19: la paginación con limit y beforeId recorre la bitácora sin repetir ni saltar entradas', async () => {
-  await readPatient(reception, patientA);
-  await readPatient(reception, patientB);
+  // Se pagina sobre lo que hizo la profesional. Así la prueba no depende de las entradas que otros archivos borran:
+  // la prueba del §9 (audit-verify.test.js) inserta y borra filas de recepción en esta misma bitácora, en paralelo.
+  // Lo que otras pruebas agreguen tiene un logId mayor, y el ancla de abajo lo deja fuera.
+  for (let i = 0; i < 4; i++) await readPatient(professional, patientB);
+  const byProfessional = `userId=${professionalId}`;
 
-  const first = await audit('?limit=2');
+  const first = await audit(`?${byProfessional}&limit=2`);
   assert.equal(first.status, 200);
   assert.equal(first.body.entries.length, 2);
   assert.equal(first.body.nextBeforeId, first.body.entries[1].logId);
 
-  const second = await audit(`?limit=2&beforeId=${first.body.nextBeforeId}`);
+  const second = await audit(`?${byProfessional}&limit=2&beforeId=${first.body.nextBeforeId}`);
   assert.equal(second.status, 200);
+  assert.equal(second.body.entries.length, 2);
   assert.ok(second.body.entries.every((e) => e.logId < first.body.nextBeforeId));
 
-  // Las mismas cuatro de una vez, ancladas en la primera: lo que otras pruebas escriban después tiene logId mayor.
+  // Las mismas cuatro de una vez, ancladas en la primera.
   const anchor = first.body.entries[0].logId + 1;
-  const firstFour = (await audit(`?limit=4&beforeId=${anchor}`)).body.entries.map((e) => e.logId);
+  const firstFour = (await audit(`?${byProfessional}&limit=4&beforeId=${anchor}`)).body.entries.map((e) => e.logId);
   assert.deepEqual([...first.body.entries, ...second.body.entries].map((e) => e.logId), firstFour);
 });
 

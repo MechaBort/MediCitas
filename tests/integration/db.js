@@ -38,43 +38,45 @@ export async function patientsOf(db, clinicId) {
   return rows.map((r) => r.patient_id);
 }
 
-// Un día lejano en el que ninguno de los profesionales indicados tiene horario. Cada llamada elige otro día, así
-// las pruebas no chocan con el seed ni con corridas anteriores. Devuelve 'YYYY-MM-DD'.
-export async function freeDay(db, professionalIds) {
+// Elegir días para las pruebas. Los archivos de prueba corren en paralelo y varios piden días para los mismos
+// profesionales a la vez. Si dos reciben el mismo día, el segundo choca al crear su horario (ex_schedules_overlap) o
+// encuentra citas ajenas en "su" día. Por eso:
+// - el día se elige al azar en una ventana de unos 100 años hacia adelante, no "el primero libre" después de un punto
+//   (con eso, dos pedidos simultáneos solían recibir el mismo día, sobre todo con la base ya llena de corridas
+//   anteriores);
+// - en lugar de recorrer toda la ventana, se prueban 50 candidatos al azar y se toma el primero libre.
+// Un día "libre" es uno sin horario de esos profesionales, con un día de margen a cada lado.
+async function pickFreeStart(db, professionalIds, { from, span, count = 1 }) {
   const { rows: [row] } = await db.query(`
-    SELECT d::date::text AS day
-      FROM generate_series(current_date + 400 + (random() * 3000)::int, current_date + 4000, interval '1 day') d
+    SELECT d::text AS day
+      FROM (SELECT current_date + $2::int + (random() * $3)::int AS d FROM generate_series(1, 50)) candidates
      WHERE NOT EXISTS (SELECT 1 FROM professional_schedules s
                         WHERE s.professional_id = ANY ($1)
-                          AND s.period && tstzrange(d - interval '1 day', d + interval '2 days'))
-     LIMIT 1`, [professionalIds]);
+                          AND s.period && tstzrange((d - 1)::timestamptz, (d + $4::int + 1)::timestamptz))
+     LIMIT 1`, [professionalIds, from, span, count]);
+  if (!row) throw new Error('No se encontró un día libre para la prueba');
   return row.day;
+}
+
+const addDaysTo = (day, n) => new Date(Date.parse(day) + n * 86_400_000).toISOString().slice(0, 10);
+
+// Un día futuro lejano en el que ninguno de los profesionales indicados tiene horario. Devuelve 'YYYY-MM-DD'.
+export async function freeDay(db, professionalIds) {
+  return pickFreeStart(db, professionalIds, { from: 400, span: 36_000 });
 }
 
 // Varios días seguidos y lejanos en los que ninguno de esos profesionales tiene horario, para las pruebas de un rango
 // de fechas (RF8). Devuelve ['YYYY-MM-DD', ...] en orden.
 export async function freeDays(db, professionalIds, count) {
-  const { rows: [row] } = await db.query(`
-    SELECT ARRAY(SELECT (d::date + k)::text FROM generate_series(0, $2 - 1) AS k ORDER BY k) AS days
-      FROM generate_series(current_date + 400 + (random() * 3000)::int, current_date + 4000, interval '1 day') d
-     WHERE NOT EXISTS (SELECT 1 FROM professional_schedules s
-                        WHERE s.professional_id = ANY ($1)
-                          AND s.period && tstzrange(d - interval '1 day', d + make_interval(days => $2 + 1)))
-     LIMIT 1`, [professionalIds, count]);
-  return row.days;
+  const first = await pickFreeStart(db, professionalIds, { from: 400, span: 36_000, count });
+  return Array.from({ length: count }, (_, k) => addDaysTo(first, k));
 }
 
 // Un día del pasado lejano en el que esos profesionales no tienen horario, para citas que ya empezaron (RF12):
-// la API no permite reservar en el pasado, así que esas citas se preparan aquí.
+// la API no permite reservar en el pasado, así que esas citas se preparan aquí. La ventana es más chica (unos 10
+// años) para no caer en fechas con reglas de zona horaria antiguas.
 export async function freePastDay(db, professionalIds) {
-  const { rows: [row] } = await db.query(`
-    SELECT d::date::text AS day
-      FROM generate_series(current_date - 400 - (random() * 3000)::int, current_date - 4000, interval '-1 day') d
-     WHERE NOT EXISTS (SELECT 1 FROM professional_schedules s
-                        WHERE s.professional_id = ANY ($1)
-                          AND s.period && tstzrange(d - interval '1 day', d + interval '2 days'))
-     LIMIT 1`, [professionalIds]);
-  return row.day;
+  return pickFreeStart(db, professionalIds, { from: -4000, span: 3_600 });
 }
 
 // Cita reservada creada directamente en la base (para días pasados). Los triggers igual calculan el fin con la

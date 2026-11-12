@@ -81,10 +81,13 @@ INSERT INTO permissions (permission_name, description, updated_by) VALUES
     ('patient_history.read',     'Consultar el historial de citas de un paciente (RF16)',           1),
     ('audit.read',               'Consultar la bitácora de auditoría (RF19)',                       1),
     ('agenda.read',              'Consultar la agenda del día (RF20)',                              1),
-    ('reports.read',             'Contar citas por estado en un rango de fechas (RF21)',            1);
+    ('reports.read',             'Contar citas por estado en un rango de fechas (RF21)',            1),
+    ('agenda.read_own',          'Consultar la agenda del día propia (RF20)',                       1);
 
 -- Matriz de permisos del enunciado. RF20 y RF21 no aparecen en ella: es una
--- ampliación del grupo (agenda para los tres roles de clínica, conteo solo para el admin).
+-- ampliación del grupo. La agenda de toda la clínica es para el admin y recepción; el
+-- profesional solo consulta la suya (agenda.read_own), como dice el §2 del enunciado.
+-- El conteo por estado es solo para el admin.
 INSERT INTO permissions_per_roles (role_id, permission_id, updated_by)
 SELECT r.role_id, p.permission_id, 1
   FROM (VALUES
@@ -115,7 +118,7 @@ SELECT r.role_id, p.permission_id, 1
         ('professional',   'patients.read'),
         ('professional',   'clinical_notes.write_own'),
         ('professional',   'patient_history.read'),
-        ('professional',   'agenda.read')
+        ('professional',   'agenda.read_own')
        ) AS m (role_name, permission_name)
   JOIN roles r       ON r.role_name = m.role_name
   JOIN permissions p ON p.permission_name = m.permission_name;

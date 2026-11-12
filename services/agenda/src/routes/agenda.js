@@ -1,13 +1,31 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { requirePermission } from '@medicitas/common/auth';
 import { withTransaction } from '@medicitas/common/db';
 import { HttpError, parse } from '@medicitas/common/errors';
 
-// RF20: la agenda del día, la vista con la que trabaja recepción. Solo lectura, con el permiso agenda.read (los tres
-// roles de clínica, según la matriz; el profesional también ve la de toda la clínica, porque la matriz no le da una
-// variante "solo lo propio"). Todas las consultas filtran por req.user.clinicId (I5).
+// RF20: la agenda del día, la vista con la que trabaja recepción. Solo lectura, con uno de dos permisos:
+// - agenda.read (administrador de clínica y recepción): la de toda la clínica o la de cualquier profesional de ella;
+// - agenda.read_own (profesional): solo la suya, porque el §2 del enunciado dice que el profesional "consulta su
+//   propia agenda". Sin professionalId recibe la suya, y con el de otro profesional recibe 403.
+// Todas las consultas filtran por req.user.clinicId (I5).
 export const agendaRouter = Router();
+
+function requireAgendaRead(req, res, next) {
+  const { permissions } = req.user;
+  if (permissions.has('agenda.read') || permissions.has('agenda.read_own')) return next();
+  return res.status(403).json({ error: 'No tiene permiso para esta operación' });
+}
+
+// Qué profesional consulta: el pedido, o, para quien solo tiene agenda.read_own, siempre el suyo. El 403 no depende
+// de que el otro profesional exista ni de su clínica, así que no revela nada (I5). El professional_id de una cita es
+// el user_id del profesional, el mismo userId del token.
+function agendaProfessional(user, requested) {
+  if (user.permissions.has('agenda.read')) return requested;
+  if (requested !== undefined && requested !== user.userId) {
+    throw new HttpError(403, 'Solo puede consultar su propia agenda');
+  }
+  return user.userId;
+}
 
 const id = z.coerce.number().int().positive().max(2147483647);
 const agendaQuery = z.object({
@@ -44,8 +62,10 @@ const AGENDA_SQL = `
      AND ($3::int IS NULL OR a.professional_id = $3)
    ORDER BY lower(a.period), a.professional_id, a.appointment_id`;
 
-agendaRouter.get('/', requirePermission('agenda.read'), async (req, res) => {
-  const { date, professionalId } = parse(agendaQuery, req.query);
+agendaRouter.get('/', requireAgendaRead, async (req, res) => {
+  const query = parse(agendaQuery, req.query);
+  const professionalId = agendaProfessional(req.user, query.professionalId);
+  const { date } = query;
   const { clinicId, dbRole } = req.user;
 
   const rows = await withTransaction(dbRole, async (client) => {

@@ -107,7 +107,8 @@ disponibilidad, citas y reportes.
 **Decisión de la rama `agenda-reportes`: la agenda del día y el conteo por estado tienen sus propias rutas (RF20,
 RF21).**
 - **Problema.** RF20 (la agenda del día) y RF21 (contar citas por estado en un rango) leen las mismas citas que el
-  resto de `agenda`, pero con otros permisos: `agenda.read` (los tres roles de clínica) y `reports.read` (solo el
+  resto de `agenda`, pero con otros permisos: `agenda.read` (administrador y recepción), `agenda.read_own`
+  (profesional; ver la decisión siguiente) y `reports.read` (solo el
   administrador). Además, `GET /appointments` ya lo usa RF16 (historial de un paciente), con `patient_history.read`.
 - **Elegido.**
   - RF20: `GET /agenda?date=…`, con un `professionalId` opcional para ver solo a ese profesional.
@@ -119,13 +120,36 @@ RF21).**
   - **RF20 muestra todos los estados,** también canceladas y reprogramadas, ordenadas por hora, con los nombres del
     paciente, el profesional y el servicio. No lee los contactos del paciente, que exigirían registrar el acceso en
     la bitácora (RF18).
-  - **El profesional ve la agenda de toda la clínica,** porque la matriz le da `agenda.read` sin la variante "solo lo
-    propio". Es el mismo criterio que con el desenlace (RF12).
+  - **El profesional solo ve su propia agenda.** Así quedó desde la decisión del 2026-11-12, que está abajo.
   - **RF21 devuelve los cinco estados, aunque den cero,** y el total.
 - **Alternativas descartadas.**
   - `GET /appointments?date=…` para RF20: mezclaría dos permisos en la misma ruta, que ya es de RF16.
   - Mostrar solo las reservadas: recepción perdería de vista las cancelaciones del día.
 - **Lo que se sacrifica.** Dos prefijos más en la API, aunque el gateway ya los tenía reservados desde la etapa 5.
+
+**Decisión del 2026-11-12: el profesional solo consulta su propia agenda (RF20, `agenda.read_own`).**
+- **Problema.** La primera versión le daba al profesional `agenda.read`, el mismo permiso de recepción, así que veía
+  las citas de toda la clínica. Pero el §2 del enunciado dice que el profesional "consulta **su propia** agenda", y
+  la matriz de permisos no tiene una fila para RF20. Ver las citas de otros profesionales (qué pacientes atienden y
+  para qué servicio) es información que su trabajo no necesita: menor privilegio.
+- **Elegido.** Un permiso nuevo, `agenda.read_own`, que reemplaza a `agenda.read` en el profesional
+  (`db/sql/03-catalogs.sql`). Sigue la convención que ya tenía `schedules.manage_own`: el sufijo `_own` significa que
+  la API además filtra por el usuario del token.
+  - Sin `professionalId`, el profesional recibe su propia agenda; no tiene sentido que reciba un error por omitirlo.
+  - Con el de otro profesional, 403 "Solo puede consultar su propia agenda". Es el mismo trato que
+    `schedules.manage_own` da a quien gestiona el horario de otro.
+  - El 403 se decide **sin consultar la base**, comparando con el `userId` del token. Por eso responde igual si el otro
+    profesional es de su clínica, de otra clínica o no existe, y no sirve para averiguar nada (I5).
+- **Alternativas descartadas.**
+  - Revisar el rol en el código (`role === 'professional'`): funciona, pero esconde la regla en el código. Con el
+    permiso, la matriz sigue viviendo en la base, sale en el diccionario de datos y se lee en un solo lugar.
+  - Responder 404 al pedir la agenda de otro profesional, como hace RF15 con las citas de otro: ahí el 404 esconde que
+    existe una cita ajena, pero los profesionales de la clínica no son secretos (aparecen en la disponibilidad). El 403
+    explica mejor qué pasó.
+  - Dejarlo como estaba y defenderlo: la frase del §2 es explícita.
+- **Lo que se sacrifica.** Cambia un catálogo de `db/sql/`, así que las pilas existentes necesitan
+  `docker compose down -v`. Un profesional que cubra a un colega no puede ver su agenda; tendría que pedirla a
+  recepción.
 
 **Decisión: RF21 acepta como máximo 366 días; RF8, 31.**
 - **Problema.** Las dos reciben un rango de fechas, pero cuestan distinto.
@@ -932,6 +956,39 @@ la clínica.**
   compuestas en la base) frena una referencia cruzada aunque el código del backend tuviera un error.
 - **Lo que se sacrifica.** Una prueba adicional contra la base en el archivo de integración, que se deshace con
   `ROLLBACK` sin dejar datos en las tablas.
+
+**Decisión del 2026-11-12: lo que encontró el ensayo de cierre al repetir la suite muchas veces.**
+
+Para el ensayo de la entrega, la suite se corrió más de veinte veces seguidas, también sobre una base que ya acumulaba
+las corridas anteriores. Aparecieron cuatro fallas intermitentes. Tres eran de las pruebas, que se pisaban entre
+archivos que corren en paralelo, y una era del sistema.
+
+- **Del sistema: diez reservas simultáneas podían terminar en 500.**
+  - *Problema.* La restricción `EXCLUDE` hace que cada inserción espere a las otras que siguen en curso. Diez
+    reservas al mismo espacio se esperaban en ciclo. PostgreSQL rompía los ciclos de a uno por segundo
+    (`deadlock_timeout`), y los reintentos inmediatos de `withTransaction` volvían a chocar hasta agotarse. Siempre
+    hubo una sola ganadora (201), pero algunas perdedoras recibían 500 en lugar de 409, y la prueba tardaba hasta 49 s.
+  - *Elegido.* El trigger de I3 bloquea los bloques de horario con `FOR NO KEY UPDATE` en lugar de `FOR SHARE`: las
+    reservas del mismo bloque hacen fila, y cada una encuentra a la ganadora ya confirmada (409 inmediato). Además,
+    `withTransaction` espera un tiempo al azar entre reintentos (*backoff* exponencial con *jitter*) y permite 5
+    intentos, para los deadlocks que siguen siendo posibles, como el de las reprogramaciones cruzadas.
+  - *Resultado.* La prueba de diez clientes pasó 15 de 15 veces seguidas, en unos 50 ms. Sin el `EXCLUDE`, las diez
+    ganan: el candado solo ordena, la garantía sigue en la restricción.
+  - *Alternativas descartadas.* Solo agregar espera entre reintentos: no alcanza, porque mientras nadie confirma no hay
+    una ganadora que encontrar. Un candado en la API (`pg_advisory_xact_lock` o `SELECT ... FOR UPDATE`): funciona,
+    pero depende de que cada camino lo recuerde. Bajar `deadlock_timeout`: es un ajuste del servidor (solo
+    superusuario) que acelera la detección, pero no evita los ciclos.
+  - *Lo que se sacrifica.* Dos reservas del mismo profesional en el mismo bloque, aunque no se solapen, van una después
+    de la otra por unos milisegundos.
+- **De las pruebas: la cadena del §9 quedaba rota para todos.** Las pruebas de manipulación de `audit-verify.test.js`
+  insertaban, alteraban y borraban eslabones en la bitácora de San José. Si otro archivo escribía ahí en ese momento,
+  su fila quedaba encadenada a un eslabón borrado, y fallaban todas las verificaciones posteriores. Ahora esas dos
+  pruebas crean su propia clínica por la API (RF1) y manipulan solo su cadena, que es por clínica.
+- **De las pruebas: la paginación de RF19 perdía una entrada.** Recorría la bitácora completa de San José, donde la
+  prueba del §9 borraba filas. Ahora pagina sobre las lecturas de la profesional, que nadie borra.
+- **De las pruebas: dos archivos recibían el mismo día.** `freeDay` elegía "el primer día libre después de un punto al
+  azar", y con la base llena de corridas anteriores, pedidos simultáneos caían en el mismo día. Ahora prueba 50
+  candidatos al azar en una ventana de unos 100 años.
 
 ---
 

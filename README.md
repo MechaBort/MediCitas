@@ -934,9 +934,25 @@ Alternativas consideradas:
 Reprogramación (RF10): `UPDATE` de la original a `reprogramada` y luego `INSERT` de la nueva, en la misma
 transacción. Si el `INSERT` falla, el rollback deja la original intacta como `reservada`.
 
+Reservas simultáneas sobre el mismo espacio: el trigger de I3 (`appointments_check_agenda`) bloquea los bloques de
+horario que usa la cita con `FOR NO KEY UPDATE` hasta el COMMIT. Por eso las reservas del mismo profesional sobre el
+mismo bloque **hacen fila**: la primera confirma, y cada una de las siguientes encuentra a la ganadora ya confirmada y
+recibe el `23P01` de inmediato (409). El candado solo ordena; la garantía de una sola ganadora sigue siendo el
+`EXCLUDE`, y la prueba de carrera lo comprueba: sin la restricción, los diez clientes obtienen su reserva.
+- **Por qué hace falta.** Con inserciones normales, PostgreSQL revisa una restricción `EXCLUDE` así: cada transacción
+  inserta su fila en el índice y espera a las otras que siguen en curso. Diez reservas a la vez se esperaban en ciclo;
+  PostgreSQL rompía los ciclos de a uno por segundo (`deadlock_timeout`), y con diez se agotaban los reintentos y la
+  API respondía 500 en lugar de 409. Lo encontró la prueba de carrera de diez clientes, repetida muchas veces el
+  2026-11-12. Con la fila, esa prueba tarda unos 50 ms.
+- **Lo que se sacrifica.** Dos reservas del mismo profesional en el mismo bloque, aunque no se solapen, se ejecutan
+  una después de la otra durante unos milisegundos. Las de profesionales distintos siguen en paralelo.
+- **Por qué en el trigger y no en la API.** Cubre todos los caminos (reservar y reprogramar) sin depender de que el
+  código recuerde bloquear, que es la debilidad de la alternativa `SELECT ... FOR UPDATE` de arriba.
+
 Deadlock: puede ocurrir si dos reprogramaciones cruzan espacios (A se mueve al espacio de B y B al de A). Postgres
-lo detecta y aborta una con `40P01`. `withTransaction` repite la transacción abortada completa, hasta 3
-intentos; para la otra transacción el deadlock no existe. Como la transacción puede repetirse, dentro de ella
+lo detecta y aborta una con `40P01`. `withTransaction` repite la transacción abortada completa, hasta 5 intentos y
+con una espera al azar entre uno y otro, para que las repeticiones no vuelvan a chocar al mismo tiempo; para la otra
+transacción el deadlock no existe. Como la transacción puede repetirse, dentro de ella
 solo va trabajo sobre la base: lo externo, como invalidar la caché de Redis, se hace después del COMMIT.
 En ese cruce ninguna de las dos puede ganar, porque cada una necesita el espacio que la otra sigue ocupando: las
 dos responden 409 y las dos citas originales quedan reservadas. Lo comprueba una prueba automatizada
@@ -1102,10 +1118,14 @@ ejemplo, mandar `clinicId`: la clínica siempre sale del token).
 Códigos comunes a todas las rutas protegidas: 401 sin token válido, 403 sin el permiso, 400 si el body o los
 parámetros no son válidos o el JSON está mal formado.
 
-- **Colección de peticiones versionada (§5 del enunciado):** `requests/medicitas.http`, compatible con REST Client
-  (VS Code) y JetBrains HTTP Client, con la obtención de tokens de Keycloak, el ciclo completo de una cita
-  (disponibilidad → reserva → reprogramación → cancelación/desenlace) y los casos de rechazo `400`, `401`, `403`,
-  `404` y `409`.
+- **Colección de peticiones versionada (§5 del enunciado):** `requests/medicitas.http`, en el formato de REST Client
+  (VS Code). Cubre todas las rutas (RF1–RF21 y el §9) como un recorrido que se corre en orden sobre una base recién
+  creada: tokens de Keycloak, catálogos, horario, el ciclo completo de una cita (disponibilidad → reserva →
+  reprogramación → cancelación → desenlace → nota clínica), pacientes, agenda, reportes, bitácora y los casos de
+  rechazo `400`, `401`, `403`, `404` y `409`. Las instrucciones y las dos variables que hay que ajustar (`@dia` y
+  `@citaPasadaId`) están al inicio del archivo.
+  - **Desde la terminal, sin instalar nada:** `node tests/tools/correr-coleccion.mjs citaPasadaId=<id> hoy=<día>`
+    ejecuta todas las peticiones en orden y compara cada respuesta con el código que anuncia su título.
 
 ### Errores de las reglas de negocio
 Varias reglas las garantiza la base de datos. Cuando una operación las viola, la API responde así
@@ -1534,13 +1554,15 @@ Recibe `{ "text": "…" }`. Solo el autor corrige su nota, y cada corrección qu
 | 409 | La cita no está atendida, o ya tiene una nota |
 
 ### `GET /agenda?date=…` (RF20)
-Permiso `agenda.read` (administrador de clínica, recepción y profesional). La agenda del día: las citas que empiezan
-ese día en la hora local de la clínica, **en todos los estados** (también canceladas y reprogramadas), ordenadas por
-hora. Con `professionalId`, solo las de ese profesional; sin él, las de toda la clínica. El profesional también puede
-ver la de toda la clínica, como indica la matriz.
+Permiso `agenda.read` (administrador de clínica y recepción) o `agenda.read_own` (profesional). La agenda del día:
+las citas que empiezan ese día en la hora local de la clínica, **en todos los estados** (también canceladas y
+reprogramadas), ordenadas por hora.
 
 - `date`: día `YYYY-MM-DD` (obligatorio).
 - `professionalId`: opcional.
+  - Con `agenda.read`: con él, solo las de ese profesional; sin él, las de toda la clínica.
+  - Con `agenda.read_own`, el profesional **solo ve su propia agenda**, como dice el §2 del enunciado: sin
+    `professionalId` recibe la suya, y con el de otro profesional recibe 403.
 
 ```json
 {
@@ -1567,7 +1589,8 @@ No incluye los contactos del paciente, porque leerlos se registraría en la bit�
 |---|---|
 | 200 | La agenda, aunque esté vacía |
 | 400 | Parámetros inválidos: falta `date`, fecha imposible, `professionalId` que no es un número o un parámetro que no se admite, como `clinicId` |
-| 404 | El profesional no existe o es de otra clínica (I5) |
+| 403 | Sin permiso, o un profesional pide la agenda de otro profesional. Responde 403 exista o no ese profesional, así que no revela nada de otra clínica (I5) |
+| 404 | Con `agenda.read`: el profesional no existe o es de otra clínica (I5) |
 
 ### `GET /reports/appointments-by-status?from=…&to=…` (RF21)
 Permiso `reports.read` (solo el administrador de clínica). Cuenta por estado las citas que empiezan entre `from` y

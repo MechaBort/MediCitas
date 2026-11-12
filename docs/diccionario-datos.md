@@ -515,7 +515,7 @@
 **Triggers**
 
 - `trg_appointments_10_set_period` (BEFORE INSERT OR UPDATE, por fila) → `agenda.appointments_set_period()` — I4: al insertar, calcula el fin de la cita con la duración del servicio. Al actualizar, impide mover la cita o cambiarle servicio, profesional, paciente o clínica (MC004).
-- `trg_appointments_20_check_agenda` (BEFORE INSERT, por fila) → `agenda.appointments_check_agenda()` — I3: la cita cae dentro del horario del profesional y fuera de sus bloqueos (MC001). Bloquea FOR SHARE los bloques de horario usados hasta el commit.
+- `trg_appointments_20_check_agenda` (BEFORE INSERT, por fila) → `agenda.appointments_check_agenda()` — I3: la cita cae dentro del horario del profesional y fuera de sus bloqueos (MC001). Bloquea FOR NO KEY UPDATE los bloques de horario usados hasta el commit: nadie los recorta durante la reserva, y las reservas del mismo bloque hacen fila en vez de bloquearse en ciclo.
 - `trg_appointments_30_check_status` (BEFORE INSERT OR UPDATE, por fila) → `agenda.appointments_check_status()` — RF13: toda cita nace reservada y los estados finales no admiten cambios (MC002). RF12: atendida o ausente solo después del inicio (MC003).
 
 ### clinical_notes
@@ -705,5 +705,6 @@ citas) están en `db/sql/04-seed.sql` y no se listan aquí.
 | `clinical_notes.write_own` | Redactar la nota clínica de las citas propias (RF15) |  |  |  | ✓ |
 | `patient_history.read` | Consultar el historial de citas de un paciente (RF16) |  | ✓ | ✓ | ✓ |
 | `audit.read` | Consultar la bitácora de auditoría (RF19) |  | ✓ |  |  |
-| `agenda.read` | Consultar la agenda del día (RF20) |  | ✓ | ✓ | ✓ |
+| `agenda.read` | Consultar la agenda del día (RF20) |  | ✓ | ✓ |  |
 | `reports.read` | Contar citas por estado en un rango de fechas (RF21) |  | ✓ |  |  |
+| `agenda.read_own` | Consultar la agenda del día propia (RF20) |  |  |  | ✓ |
