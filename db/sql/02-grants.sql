@@ -22,7 +22,9 @@ GRANT USAGE ON SCHEMA agenda, clinical TO mc_clinic_admin, mc_reception, mc_prof
 -- Las funciones nacen ejecutables por PUBLIC; los triggers no necesitan ese permiso.
 -- (Se nombran una por una: "ALL FUNCTIONS" incluiría las de btree_gist, que no son de mc_owner.)
 REVOKE EXECUTE ON FUNCTION set_updated_at(), appointments_set_period(), appointments_check_agenda(),
-                           appointments_check_status(), professional_schedules_guard(), audit_logs_append_only()
+                           appointments_check_status(), professional_schedules_guard(), audit_logs_append_only(),
+                           audit_log_compute_hash(char, bigint, int, int, smallint, smallint, bigint, int, varchar, jsonb, timestamptz),
+                           audit_logs_set_hash(), verify_audit_chain(int)
    FROM PUBLIC;
 
 -- Catálogos y geografía: lectura para todos.
@@ -69,9 +71,12 @@ GRANT UPDATE (appointment_status_id, cancel_reason, cancelled_by, cancelled_at, 
 -- RF15: solo el profesional ("solo de citas propias" lo filtra el backend).
 GRANT SELECT, INSERT, UPDATE ON clinical_notes TO mc_professional;
 
--- RF18, RF19: nadie tiene UPDATE, DELETE ni TRUNCATE (I6).
+-- RF18, RF19 y Módulo §9: nadie tiene UPDATE, DELETE ni TRUNCATE (I6); el administrador verifica la cadena.
 GRANT SELECT, INSERT ON audit_logs TO mc_clinic_admin;
 GRANT INSERT         ON audit_logs TO mc_reception, mc_professional;
+GRANT EXECUTE ON FUNCTION audit_log_compute_hash(char, bigint, int, int, smallint, smallint, bigint, int, varchar, jsonb, timestamptz),
+                          verify_audit_chain(int)
+   TO mc_clinic_admin;
 
 GRANT INSERT ON system_errors_logs TO mc_platform, mc_clinic_admin, mc_reception, mc_professional;
 

@@ -1212,6 +1212,30 @@ sobre la bitácora. Es la segunda capa: la primera es que ningún rol tiene esos
 `DELETE` por error, el trigger igual lo impediría; incluso el dueño de la tabla queda bloqueado (salvo que
 desactive el trigger a propósito, y por eso la app no se conecta como dueño).
 
+#### `trg_audit_logs_hash_chain` y `verify_audit_chain`: Módulo §9 (auditoría verificable) 🔴 (`:670`)
+
+La tercera capa sobre `clinical.audit_logs` detecta si incluso `mc_owner` o un superusuario desactivó el trigger
+`trg_audit_logs_append_only` y alteró o borró un registro por fuera de la aplicación:
+
+1. **Dos columnas en `audit_logs`:** `prev_hash CHAR(64)` (`NULL` en el primer registro de cada clínica) y
+   `row_hash CHAR(64) NOT NULL`.
+2. **Función de cálculo compartida (`clinical.audit_log_compute_hash`):** concatena con `|` el `prev_hash`
+   (`'GENESIS'` si es `NULL`) y todas las columnas del registro (`log_id`, `clinic_id`, `user_id`, `event_type_id`,
+   `data_object_id`, `object_id`, `patient_id`, `description`, `metadata` y `created_at` en UTC) y calcula su
+   `sha256` en hexadecimal. La usan tanto el trigger al insertar como `verify_audit_chain` al verificar.
+3. **Concurrencia (`pg_advisory_xact_lock`) y `SECURITY DEFINER`:** antes de leer el último `row_hash` de la
+   clínica, `audit_logs_set_hash()` toma `pg_advisory_xact_lock(hashtext('clinical.audit_logs'), NEW.clinic_id)`
+   para que dos inserciones simultáneas de la misma clínica no lean el mismo predecesor y bifurquen la cadena.
+   Además es `SECURITY DEFINER` con `search_path` fijo porque `mc_reception` y `mc_professional` tienen `INSERT`
+   pero no `SELECT` sobre `audit_logs`.
+4. **Verificación (`GET /audit/verify`):** llama a `clinical.verify_audit_chain(clinic_id)` y devuelve
+   `{ clinicId, valid, checkedCount, lastLogId, lastRowHash, firstBrokenLogId, failureReason }`. Si se modificó una
+   fila falla la comparación de `row_hash` en esa fila; si se borró una fila intermedia falla la comparación de
+   `prev_hash` en la fila inmediatamente siguiente.
+5. **Límite conocido para la defensa:** un superusuario con acceso al motor podría recalcular en cascada todas las
+   huellas desde la fila alterada hasta el final; la mitigación es exportar periódicamente `lastRowHash` a un
+   almacenamiento externo de solo escritura fuera de PostgreSQL.
+
 #### Experimentos
 
 **E16. Reservar a las 3 de la mañana** (como `mc_admin_svc`).

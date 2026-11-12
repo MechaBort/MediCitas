@@ -276,7 +276,7 @@ COMMENT ON COLUMN data_objects.name           IS 'Nombre técnico del tipo de da
 COMMENT ON COLUMN data_objects.description    IS 'Descripción legible.';
 
 COMMENT ON TABLE audit_logs IS
-    'Bitácora de auditoría append-only (RF18, RF19): quién leyó o escribió qué dato sensible, de cuál paciente y cuándo. Ningún rol tiene UPDATE, DELETE ni TRUNCATE, y los triggers los rechazan aunque alguien los conceda (I6). Tenant: clinic_id.';
+    'Bitácora de auditoría append-only y verificable (RF18, RF19, §9): quién leyó o escribió qué dato sensible, de cuál paciente y cuándo. Ningún rol tiene UPDATE, DELETE ni TRUNCATE, los triggers los rechazan (I6), y cada fila encadena su huella SHA-256 con la anterior de la misma clínica. Tenant: clinic_id.';
 COMMENT ON COLUMN audit_logs.log_id         IS 'Identificador del registro.';
 COMMENT ON COLUMN audit_logs.clinic_id      IS 'Clínica donde ocurrió el acceso.';
 COMMENT ON COLUMN audit_logs.user_id        IS 'Quién: usuario que hizo el acceso.';
@@ -287,6 +287,8 @@ COMMENT ON COLUMN audit_logs.patient_id     IS 'Sobre cuál paciente.';
 COMMENT ON COLUMN audit_logs.description    IS 'Resumen legible del evento.';
 COMMENT ON COLUMN audit_logs.metadata       IS 'Detalles adicionales del acceso (ej. ruta o id de la petición); opcional.';
 COMMENT ON COLUMN audit_logs.created_at     IS 'Cuándo ocurrió el acceso.';
+COMMENT ON COLUMN audit_logs.prev_hash      IS 'Huella SHA-256 (64 caracteres hexadecimales) del registro anterior de la misma clínica; NULL en el primer registro (§9).';
+COMMENT ON COLUMN audit_logs.row_hash       IS 'Huella SHA-256 (64 caracteres hexadecimales) calculada sobre prev_hash y las columnas del registro al insertar (§9).';
 
 COMMENT ON TABLE severities IS 'Niveles de gravedad de system_errors_logs. Ids fijos.';
 COMMENT ON COLUMN severities.severity_id IS 'Id fijo de la gravedad.';
@@ -320,6 +322,7 @@ COMMENT ON TRIGGER trg_professional_schedules_guard ON professional_schedules IS
     'I3: no se borra ni se recorta un bloque de horario que deje fuera citas reservadas (MC006).';
 COMMENT ON TRIGGER trg_audit_logs_append_only ON audit_logs IS 'I6: rechaza UPDATE y DELETE (MC005).';
 COMMENT ON TRIGGER trg_audit_logs_no_truncate ON audit_logs IS 'I6: rechaza TRUNCATE (MC005).';
+COMMENT ON TRIGGER trg_audit_logs_hash_chain  ON audit_logs IS '§9: toma candado consultivo por clínica y encadena prev_hash y row_hash con SHA-256 al insertar.';
 
 
 -- =============================================================================
@@ -335,5 +338,6 @@ COMMENT ON INDEX ix_patient_contacts_patient   IS 'RF14 y RF18: contactos de un 
 COMMENT ON INDEX ix_audit_clinic_patient_date  IS 'RF19: bitácora filtrada por paciente y fechas.';
 COMMENT ON INDEX ix_audit_clinic_user_date     IS 'RF19: bitácora filtrada por usuario y fechas.';
 COMMENT ON INDEX ix_audit_clinic_date          IS 'RF19: bitácora filtrada solo por fechas.';
+COMMENT ON INDEX ix_audit_clinic_log           IS '§9: último registro por clínica al encadenar y recorrido ordenado al verificar la cadena.';
 
 COMMIT;

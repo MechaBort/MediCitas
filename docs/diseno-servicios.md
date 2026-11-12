@@ -609,6 +609,63 @@ La lista Committed del Trello sigue este orden.
 
 **Pendiente de diseñar:**
 
-- el detalle de los manifiestos de Kubernetes;
-- el detalle de las pruebas;
-- la elección del módulo del §9.
+- el detalle de los manifiestos de Kubernetes.
+
+---
+
+## 11. Módulo adicional (§9): auditoría verificable con cadena de huellas SHA-256
+
+El enunciado exige para los grupos de tres personas un módulo adicional de entre cuatro opciones (§9). Se eligió la
+**opción 1: auditoría consultable y verificable**, que extiende la protección *append-only* de la invariante `I6` con
+una cadena criptográfica de huellas SHA-256 por clínica en `clinical.audit_logs`.
+
+- **Por qué se eligió esta opción frente a las otras tres del §9:**
+  - *RLS como segunda estrategia* exigía tocar `withTransaction` y las quince tablas con `clinic_id` mientras los tres
+    carriles editaban consultas en paralelo.
+  - *Adjuntos clínicos* agregaba almacenamiento de objetos (MinIO) y la mayor superficie nueva de rutas.
+  - *Estrategias de invalidación comparadas* dependía de terminar primero RF7 y la caché de Redis, que estaban en el
+    carril más cargado (`agenda`).
+  - *Auditoría verificable* está acotada a `clinical.audit_logs` y al servicio `clinical`, no obliga a cambiar el
+    código de `RF18` (porque el encadenamiento ocurre en un trigger `BEFORE INSERT`) y complementa directamente `I6`.
+
+- **Problema que resuelve.** La invariante `I6` impide modificar o borrar la bitácora desde la aplicación en dos capas:
+  ningún rol de aplicación tiene `UPDATE`, `DELETE` ni `TRUNCATE` (`db/sql/02-grants.sql`), y los triggers
+  `trg_audit_logs_append_only` y `trg_audit_logs_no_truncate` rechazan cualquier cambio con `MC005` aunque alguien
+  conceda el permiso por error. Sin embargo, el dueño del esquema (`mc_owner`) o un superusuario de PostgreSQL con
+  acceso directo al motor podría desactivar temporalmente el trigger (`ALTER TABLE ... DISABLE TRIGGER`), alterar el
+  texto de un evento o borrar una fila incómoda, y volver a activar el trigger sin dejar rastro visible.
+
+- **Diseño elegido:**
+  1. **Dos columnas en `clinical.audit_logs`:** `prev_hash CHAR(64)` (nula únicamente en el primer registro de cada
+     clínica) y `row_hash CHAR(64) NOT NULL`.
+  2. **Función canónica compartida (`clinical.audit_log_compute_hash`):** función SQL `IMMUTABLE` que concatena con
+     separador `|` el `prev_hash` (`'GENESIS'` si es `NULL`) y todas las columnas inmutables de la fila (`log_id`,
+     `clinic_id`, `user_id`, `event_type_id`, `data_object_id`, `object_id`, `patient_id`, `description`, `metadata`
+     serializado como `JSONB` canónico y `created_at` formateado en UTC con microsegundos), y calcula su resumen
+     `sha256()` codificado en hexadecimal de 64 caracteres. Tanto el trigger de inserción como la función verificadora
+     llaman a esta misma función para que jamás difieran en el orden o formato de los campos.
+  3. **Serialización por clínica con `pg_advisory_xact_lock` (`clinical.audit_logs_set_hash`):** el trigger
+     `BEFORE INSERT` adquiere `pg_advisory_xact_lock(hashtext('clinical.audit_logs'), NEW.clinic_id)` antes de leer la
+     última fila de esa clínica (`ORDER BY log_id DESC LIMIT 1`, respaldada por el índice `ix_audit_clinic_log`). Si
+     dos transacciones de la misma clínica insertan al mismo tiempo, la segunda espera a que la primera confirme y lee
+     su `row_hash` ya confirmado, evitando que la cadena se bifurque; las clínicas distintas usan llaves de candado
+     distintas y no se bloquean entre sí. Además, si dos transacciones obtuvieron su `nextval` de `log_id` en orden
+     inverso al orden en que tomaron el candado, el trigger adelanta `NEW.log_id` para que el orden por `log_id`
+     coincida siempre con el orden de encadenamiento.
+  4. **`SECURITY DEFINER` con `search_path` fijo en el trigger:** los roles `mc_reception` y `mc_professional` tienen
+     `INSERT` pero no `SELECT` sobre `clinical.audit_logs` (`db/sql/02-grants.sql`). Como el trigger necesita leer el
+     `row_hash` del registro previo al insertar, la función `clinical.audit_logs_set_hash()` se declara
+     `SECURITY DEFINER SET search_path = admin, agenda, clinical, pg_temp`. Así puede leer el último eslabón sin abrir
+     permiso `SELECT` sobre la bitácora a recepción ni a los profesionales.
+  5. **Verificación en la base (`clinical.verify_audit_chain`) y en la API (`GET /audit/verify`):** la función recorre
+     los registros de la clínica en orden de `log_id` y comprueba cada eslabón (`prev_hash` contra el `row_hash`
+     anterior, y `row_hash` contra `audit_log_compute_hash`). Si una fila fue alterada o si se borró un eslabón
+     intermedio, se detiene y devuelve `is_valid = false` junto con el `first_broken_log_id` exacto y el motivo. La
+     ruta `GET /audit/verify` en `services/clinical` la expone al administrador de la clínica (permiso `audit.read`).
+
+- **Lo que se sacrifica y límite conocido para la defensa.** Las inserciones en `audit_logs` de una misma clínica se
+  serializan durante el tiempo de la transacción que las contiene, y un atacante con privilegios de superusuario que
+  conozca la función `audit_log_compute_hash` podría no solo modificar un registro sino recalcular en cascada todos
+  los `prev_hash` y `row_hash` posteriores hasta el final de la cadena. La mitigación estándar —anclar o exportar
+  periódicamente el último `row_hash` (`lastRowHash` de `GET /audit/verify`) a un almacenamiento externo de solo
+  escritura fuera de PostgreSQL— queda documentada como evolución para producción.

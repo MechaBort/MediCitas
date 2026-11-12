@@ -560,7 +560,7 @@
 
 ### audit_logs
 
-**Schema:** `clinical`. Bitácora de auditoría append-only (RF18, RF19): quién leyó o escribió qué dato sensible, de cuál paciente y cuándo. Ningún rol tiene UPDATE, DELETE ni TRUNCATE, y los triggers los rechazan aunque alguien los conceda (I6). Tenant: clinic_id.
+**Schema:** `clinical`. Bitácora de auditoría append-only y verificable (RF18, RF19, §9): quién leyó o escribió qué dato sensible, de cuál paciente y cuándo. Ningún rol tiene UPDATE, DELETE ni TRUNCATE, los triggers los rechazan (I6), y cada fila encadena su huella SHA-256 con la anterior de la misma clínica. Tenant: clinic_id.
 
 | Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
 |---|---|---|---|---|---|
@@ -574,6 +574,8 @@
 | `description` | varchar(255) | no |  |  | Resumen legible del evento. |
 | `metadata` | jsonb | sí |  |  | Detalles adicionales del acceso (ej. ruta o id de la petición); opcional. |
 | `created_at` | timestamptz | no | `now()` |  | Cuándo ocurrió el acceso. |
+| `prev_hash` | char(64) | sí |  |  | Huella SHA-256 (64 caracteres hexadecimales) del registro anterior de la misma clínica; NULL en el primer registro (§9). |
+| `row_hash` | char(64) | no |  |  | Huella SHA-256 (64 caracteres hexadecimales) calculada sobre prev_hash y las columnas del registro al insertar (§9). |
 
 **Restricciones**
 
@@ -583,12 +585,14 @@
 **Índices adicionales**
 
 - `ix_audit_clinic_date`: `btree (clinic_id, created_at)` — RF19: bitácora filtrada solo por fechas.
+- `ix_audit_clinic_log`: `btree (clinic_id, log_id)` — §9: último registro por clínica al encadenar y recorrido ordenado al verificar la cadena.
 - `ix_audit_clinic_patient_date`: `btree (clinic_id, patient_id, created_at)` — RF19: bitácora filtrada por paciente y fechas.
 - `ix_audit_clinic_user_date`: `btree (clinic_id, user_id, created_at)` — RF19: bitácora filtrada por usuario y fechas.
 
 **Triggers**
 
 - `trg_audit_logs_append_only` (BEFORE DELETE OR UPDATE, por fila) → `clinical.audit_logs_append_only()` — I6: rechaza UPDATE y DELETE (MC005).
+- `trg_audit_logs_hash_chain` (BEFORE INSERT, por fila) → `clinical.audit_logs_set_hash()` — §9: toma candado consultivo por clínica y encadena prev_hash y row_hash con SHA-256 al insertar.
 - `trg_audit_logs_no_truncate` (BEFORE TRUNCATE, por sentencia) → `clinical.audit_logs_append_only()` — I6: rechaza TRUNCATE (MC005).
 
 ### severities
