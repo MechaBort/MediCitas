@@ -1946,8 +1946,8 @@ por petición.
 |---|---|---|---|
 | RF1 | Alta de clínica con su primer admin | ✔ tablas y permisos | ✔ `POST /clinics` (servicio `admin`) |
 | RF2 | Usuarios: alta, baja lógica, rol | ✔ `users`, `ck_users_platform_admin` | ✔ `/users` (servicio `admin`) |
-| RF3 | Catálogo de servicios | ✔ `services` | ✘ |
-| RF4 | Profesionales y sus servicios | ✔ `professionals`, `services_per_professionals` | ✘ |
+| RF3 | Catálogo de servicios | ✔ `services` | ✔ `/services` y `/services/specialties` (servicio `admin`), con pruebas de RF3 e I5 |
+| RF4 | Profesionales y sus servicios | ✔ `professionals`, `services_per_professionals` | ✔ `/professionals` y `/professionals/{id}/services` (servicio `admin`), con pruebas de RF4 e I5 |
 | RF5 | Horario semanal | ✔ `professional_schedules` con `EXCLUDE` | ✘ |
 | RF6 | Bloqueos y conflictos | ✔ `blockades`; conflictos consultables (E25) | ✘ |
 | RF7 | Espacios disponibles de un profesional | ✔ índices; los huecos se calculan con rangos múltiples | ✔ `GET /availability/professionals/{id}` (servicio `agenda`), con la caché de Redis y pruebas de I7 e I8 |
