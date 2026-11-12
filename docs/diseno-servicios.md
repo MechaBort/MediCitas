@@ -85,6 +85,25 @@ disponibilidad, citas y reportes.
 - **Lo que se sacrifica.** La ruta de RF9 cambió de forma, aunque no de comportamiento: sus 13 pruebas pasan sin
   cambios.
 
+**Decisión de `RF3` y `RF4`: alta de profesionales reutilizando `createAccount` y sincronización con baja lógica en tablas puente.**
+- **Problema.** Un profesional en MediCitas no es solo un registro de catálogo: también es un usuario que inicia sesión
+  en Keycloak (`role_id = 4`), tiene especialidades (`specialties_per_professionals`), contactos
+  (`professional_contacts`) y servicios habilitados (`services_per_professionals`), a los cuales apuntan las citas
+  mediante una llave foránea compuesta.
+- **Elegido.** `POST /professionals` valida primero en PostgreSQL que las especialidades existan y que los servicios
+  pertenezcan a la clínica (I5) y coincidan con las especialidades del profesional, antes de tocar Keycloak. Luego
+  reutiliza `createAccount` con el rol `professional` e inserta en una sola transacción `users`, `professionals`,
+  especialidades, servicios y contactos. Al actualizar las especialidades o los servicios habilitados
+  (`PATCH /professionals/{id}` o `PUT /professionals/{id}/services`), las filas que se quitan se marcan con
+  `is_active = false` y las que se vuelven a habilitar se reactivan con `ON CONFLICT ... DO UPDATE`.
+- **Alternativas descartadas.**
+  - Crear primero el usuario en `/users` y después convertirlo en profesional en `/professionals`: dejaría el alta en
+    dos pasos manuales y chocaría con la regla de que `/users` solo maneja `clinic_admin` y `reception`.
+  - Borrar filas (`DELETE`) en `services_per_professionals` al quitar un servicio: fallaría con `23503` si el
+    profesional ya tuvo alguna cita histórica para ese servicio.
+- **Lo que se sacrifica.** Las tablas puente conservan filas inactivas (`is_active = false`), por lo que las consultas
+  de disponibilidad y reserva filtran siempre por `is_active` (como ya hacían `availability.js` y `appointments.js`).
+
 **Decisión de la rama `agenda-reportes`: la agenda del día y el conteo por estado tienen sus propias rutas (RF20,
 RF21).**
 - **Problema.** RF20 (la agenda del día) y RF21 (contar citas por estado en un rango) leen las mismas citas que el
