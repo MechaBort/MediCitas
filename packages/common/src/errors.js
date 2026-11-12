@@ -37,9 +37,9 @@ const PG_ERRORS = {
   '23P01': [409, 'Se cruza con otro registro vigente'],                    // exclusion_violation
   '22P02': [400, 'Formato de dato inválido'],                              // invalid_text_representation
   '42501': [403, 'El rol no tiene permiso para esta operación'],          // insufficient_privilege
-  'MC001': [400, 'Cita solicitada en ubicacion prohibida'],  // La cita no cabe completa en los bloques de horario del profesional, o se cruza con uno de sus bloqueos.
+  'MC001': [400, 'La cita no se puede agendar pues el horario del profesional no está disponible en ese apartado de tiempo'],  // La cita no cabe completa en los bloques de horario del profesional, o se cruza con uno de sus bloqueos.
   'MC002': [409, 'Cambio de estado de una cita en estado final'],  // Cambiar una cita que ya está en un estado final.
-  'MC003': [409, 'Cambio de estado de una cita sin permiso'],  // Registrar atendida o ausente antes de la hora de inicio.
+  'MC003': [409, 'Cambio de estado sin que la cita haya comenzado'],  // Registrar atendida o ausente antes de la hora de inicio.
   'MC004': [500, 'Cambio de horario de una cita ya existente'],  // Cambiar el horario, el servicio, el profesional o el paciente de una cita existente.
   'MC005': [500, 'Modificación de bitácora inválida'],  // Modificar, borrar o vaciar la bitácora.
   'MC006': [409, 'Bloqueo de horario inválido'],  // Borrar o recortar un bloque de horario que dejaría citas reservadas fuera del horario.
