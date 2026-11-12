@@ -1,0 +1,54 @@
+# Servicio clinical (RF14, RF15, RF18, RF19 y el módulo del §9): pacientes, notas clínicas y bitácora. Demanda media:
+# una copia. Ver los comentarios comunes en k8s/30-admin.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clinical
+  namespace: medicitas
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: clinical }
+  template:
+    metadata:
+      labels: { app: clinical }
+      annotations:
+        medicitas/image-id: "__IMAGE_ID__"
+    spec:
+      containers:
+        - name: clinical
+          image: medicitas/clinical:local
+          imagePullPolicy: Never
+          envFrom:
+            # PGPASSWORD (de mc_clinical_svc).
+            - secretRef: { name: clinical-env }
+          env:
+            - { name: PORT, value: "3000" }
+            - { name: PGHOST, value: medicitas-db-pooler-rw }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: medicitas }
+            - { name: PGUSER, value: mc_clinical_svc }
+            - { name: KEYCLOAK_ISSUER, value: "http://localhost:8080/realms/medicitas" }
+            - { name: KEYCLOAK_AUDIENCE, value: medicitas-api }
+            - { name: KEYCLOAK_JWKS_URL, value: "http://keycloak:8080/realms/medicitas/protocol/openid-connect/certs" }
+          ports:
+            - { name: http, containerPort: 3000 }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clinical
+  namespace: medicitas
+spec:
+  selector: { app: clinical }
+  ports:
+    - { port: 3000, targetPort: http }

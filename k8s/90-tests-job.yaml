@@ -1,0 +1,25 @@
+# La misma suite de npm test, corriendo DENTRO del clúster contra el gateway de Kubernetes: la evidencia de que el
+# sistema se comporta igual que en Compose. La lanza k8s/run-tests.sh, que borra la corrida anterior, aplica este Job,
+# espera a que termine y muestra el resultado. La imagen es la de tests/Dockerfile, construida por k8s/deploy.sh.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tests
+  namespace: medicitas
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: tests
+          image: medicitas/tests:local
+          imagePullPolicy: Never
+          env:
+            - { name: API_URL, value: "http://gateway:3000" }
+            - { name: KEYCLOAK_URL, value: "http://keycloak:8080" }
+            # Conexión directa como mc_owner, solo para preparar datos y verificar (tests/integration/db.js).
+            - name: TEST_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: tests-env, key: TEST_DATABASE_URL } }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }

@@ -1,0 +1,57 @@
+# Servicio agenda (RF5–RF13, RF16, RF20, RF21): la consulta más frecuente (RF7) y la reserva. Alta demanda: empieza
+# con dos copias, y en el paso 3 el HPA las aumenta según la CPU. Ver los comentarios comunes en k8s/30-admin.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agenda
+  namespace: medicitas
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: agenda }
+  template:
+    metadata:
+      labels: { app: agenda }
+      annotations:
+        medicitas/image-id: "__IMAGE_ID__"
+    spec:
+      containers:
+        - name: agenda
+          image: medicitas/agenda:local
+          imagePullPolicy: Never
+          envFrom:
+            # PGPASSWORD (de mc_agenda_svc) y REDIS_PASSWORD.
+            - secretRef: { name: agenda-env }
+          env:
+            - { name: PORT, value: "3000" }
+            - { name: PGHOST, value: medicitas-db-pooler-rw }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: medicitas }
+            - { name: PGUSER, value: mc_agenda_svc }
+            - { name: KEYCLOAK_ISSUER, value: "http://localhost:8080/realms/medicitas" }
+            - { name: KEYCLOAK_AUDIENCE, value: medicitas-api }
+            - { name: KEYCLOAK_JWKS_URL, value: "http://keycloak:8080/realms/medicitas/protocol/openid-connect/certs" }
+            # La caché de RF7. $(REDIS_PASSWORD) viene del Secret agenda-env.
+            - { name: REDIS_URL, value: "redis://:$(REDIS_PASSWORD)@redis:6379" }
+          ports:
+            - { name: http, containerPort: 3000 }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+          # La request de CPU es la base del HPA del paso 3: escala cuando el uso supera un porcentaje de esta cifra.
+          resources:
+            requests: { cpu: 250m, memory: 128Mi }
+            limits: { cpu: "1", memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agenda
+  namespace: medicitas
+spec:
+  selector: { app: agenda }
+  ports:
+    - { port: 3000, targetPort: http }

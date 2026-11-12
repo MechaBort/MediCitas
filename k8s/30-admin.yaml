@@ -1,0 +1,67 @@
+# Servicio admin (RF1–RF4): clínicas, usuarios, servicios y profesionales. Baja demanda: una copia.
+#
+# Las tres piezas comunes de los servicios (30-admin, 31-agenda, 32-clinical):
+# - Imagen local medicitas/<servicio>:local, construida por k8s/deploy.sh dentro de minikube (imagePullPolicy: Never).
+#   La anotación medicitas/image-id cambia cuando cambia la imagen: así Kubernetes reemplaza las copias solo si hay
+#   código nuevo. deploy.sh pone el valor; por eso estos archivos se aplican con deploy.sh y no con kubectl apply.
+# - Se conectan a PgBouncer (medicitas-db-pooler-rw) con su propio usuario de base y su propio Secret.
+# - Dos sondas distintas:
+#   - readiness en /health, que consulta la base: si la base no responde, la copia deja de recibir tráfico;
+#   - liveness solo revisa que el proceso escuche en el puerto. Si usara /health, una caída de la base haría que
+#     Kubernetes reiniciara todas las copias en cadena, sin arreglar nada.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin
+  namespace: medicitas
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: admin }
+  template:
+    metadata:
+      labels: { app: admin }
+      annotations:
+        medicitas/image-id: "__IMAGE_ID__"
+    spec:
+      containers:
+        - name: admin
+          image: medicitas/admin:local
+          imagePullPolicy: Never
+          envFrom:
+            # PGPASSWORD (de mc_admin_svc) y KEYCLOAK_USER_ADMIN_SECRET.
+            - secretRef: { name: admin-env }
+          env:
+            - { name: PORT, value: "3000" }
+            - { name: PGHOST, value: medicitas-db-pooler-rw }
+            - { name: PGPORT, value: "5432" }
+            - { name: PGDATABASE, value: medicitas }
+            - { name: PGUSER, value: mc_admin_svc }
+            - { name: KEYCLOAK_ISSUER, value: "http://localhost:8080/realms/medicitas" }
+            - { name: KEYCLOAK_AUDIENCE, value: medicitas-api }
+            - { name: KEYCLOAK_JWKS_URL, value: "http://keycloak:8080/realms/medicitas/protocol/openid-connect/certs" }
+            # Admin API de Keycloak, para crear usuarios y asignar roles (RF1, RF2, RF4).
+            - { name: KEYCLOAK_URL, value: "http://keycloak:8080" }
+            - { name: KEYCLOAK_REALM, value: medicitas }
+            - { name: KEYCLOAK_USER_ADMIN_CLIENT_ID, value: medicitas-user-admin }
+          ports:
+            - { name: http, containerPort: 3000 }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: "1", memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admin
+  namespace: medicitas
+spec:
+  selector: { app: admin }
+  ports:
+    - { port: 3000, targetPort: http }

@@ -1,0 +1,46 @@
+# Redis: la caché de disponibilidad de RF7 (docs/comparacion-arquitecturas.md). La misma configuración que Compose:
+# sin disco (--save "" y --appendonly no), 64 MB y volatile-lru, para que la memoria llena nunca expulse las versiones
+# de agenda (I8). Una sola copia: si se reinicia, pierde todo a la vez (versiones y copias) y agenda consulta
+# PostgreSQL, que es más lento pero correcto.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: medicitas
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:8.2-alpine
+          # $(REDIS_PASSWORD) lo reemplaza Kubernetes con la variable de entorno del contenedor.
+          args: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb",
+                 "--maxmemory-policy", "volatile-lru", "--requirepass", "$(REDIS_PASSWORD)"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: redis-env, key: REDIS_PASSWORD } }
+            - name: REDISCLI_AUTH
+              valueFrom: { secretKeyRef: { name: redis-env, key: REDIS_PASSWORD } }
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec: { command: ["sh", "-c", "redis-cli ping | grep -q PONG"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: medicitas
+spec:
+  selector: { app: redis }
+  ports:
+    - port: 6379
