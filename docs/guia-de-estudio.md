@@ -1862,8 +1862,8 @@ por petición.
 | RF2 | Usuarios: alta, baja lógica, rol | ✔ `users`, `ck_users_platform_admin` | ✔ `/users` (servicio `admin`) |
 | RF3 | Catálogo de servicios | ✔ `services` | ✘ |
 | RF4 | Profesionales y sus servicios | ✔ `professionals`, `services_per_professionals` | ✘ |
-| RF5 | Horario semanal | ✔ `professional_schedules` con `EXCLUDE` | ✘ |
-| RF6 | Bloqueos y conflictos | ✔ `blockades`; conflictos consultables (E25) | ✘ |
+| RF5 | Horario semanal | ✔ `professional_schedules` con `EXCLUDE` | ✔ `/schedules` (servicio `agenda`), con pruebas de jornada partida, solapamiento e I3 (`MC006`) |
+| RF6 | Bloqueos y conflictos | ✔ `blockades`; conflictos consultables (E25) | ✔ `/blockades` y `/blockades/conflicts` (servicio `agenda`), con pruebas de citas en conflicto e I3 |
 | RF7 | Espacios disponibles de un profesional | ✔ índices; los huecos se calculan con rangos múltiples | ✔ `GET /availability/professionals/{id}` (servicio `agenda`), con pruebas de I7 e I8; falta la caché |
 | RF8 | Disponibilidad por servicio en un rango | ✔ índice `ix_spp_clinic_service` | ✔ `GET /availability/services/{id}`, hasta 31 días, con pruebas |
 | RF9 | Reservar | ✔ `EXCLUDE` y triggers | ✔ `POST /appointments` (servicio `agenda`), con la prueba de carrera (sección 8.3) |
