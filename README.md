@@ -23,6 +23,12 @@ ejemplo con `docker compose up --build agenda`) y sus rutas responden 503, reini
 `docker compose restart gateway`. Una pila que todavía tenga el contenedor viejo
 `medicitas-app-1` necesita `docker compose up --build --remove-orphans`.
 
+**Documentos de la entrega:**
+- [docs/diseno.md](docs/diseno.md), el **documento de diseño**: la arquitectura, el modelo entidad-relación, la
+  comparación de multi-tenancy y la decisión de aislamiento con sus trade-offs.
+- [docs/informe-pruebas.md](docs/informe-pruebas.md), el **informe de pruebas**: qué prueba cubre cada requisito
+  funcional y cada invariante, el resultado de la suite y las mediciones de la caché y de carga.
+
 Diagramas de arquitectura y entidad-relación: [docs/diagramas.md](docs/diagramas.md).
 Diccionario de datos: [docs/diccionario-datos.md](docs/diccionario-datos.md). Se genera desde la base con
 `./db/tools/generar-diccionario.sh` (con la pila levantada); las descripciones están en `db/sql/05-comments.sql`.
@@ -857,8 +863,9 @@ mantiene una sola vez y la Etapa 2 (plataforma distribuida y analítica) parte d
 
 > La base sí tiene tres schemas (`admin`, `agenda` y `clinical`), pero **son uno por servicio, no uno por
 > clínica**. Todas las clínicas comparten las mismas tablas, y el tenant sigue siendo `clinicId`. Ver
-> `docs/diseno-servicios.md`, sección 5. Su debilidad, que una
-consulta olvide el filtro, se mitiga en tres capas:
+> `docs/diseno-servicios.md`, sección 5.
+
+La debilidad de la columna discriminadora, que una consulta olvide el filtro, se mitiga en tres capas:
 1. El `clinicId` sale siempre de la identidad (token → `Users.keycloakSub` → `Users.clinicId`), nunca de un parámetro de la petición.
 2. Las FKs compuestas hacen imposible, en el motor, que un registro de una clínica apunte a otro de otra clínica.
 3. Pruebas automatizadas de fuga que manipulan el identificador de clínica en los parámetros (I5).
