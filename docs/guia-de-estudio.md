@@ -1328,20 +1328,31 @@ ROLLBACK;
 - **Ojo:** la base **protege** la bitácora, pero **escribir** una entrada en cada lectura o escritura de un dato
   sensible es trabajo de la API (**pendiente**). Los datos de demostración ya traen una bitácora simulada.
 
-### 4.9 Índices 🟡
+### 4.9 Índices y planes `EXPLAIN ANALYZE` 🟡
 
 Un índice es una estructura auxiliar que permite encontrar filas sin recorrer toda la tabla. Cada uno sirve a una
-consulta concreta; la lista con su justificación está en el README (sección de índices) y en el diccionario.
+consulta concreta; la lista con sus planes `EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)` reales sobre los datos semilla
+está en el README (sección "Justificación con `EXPLAIN ANALYZE` sobre los datos semilla") y en el diccionario.
 
 - **B-tree** (el normal): para `=`, `<`, `>` y ordenar. Ejemplo: `ix_appointments_clinic_start (clinic_id,
-  lower(period))` sirve a "citas de la clínica 1 entre tal y tal hora" (RF20, RF21).
-- **GiST**: para rangos y solapamientos (`&&`). Ejemplo: `ix_blockades_prof_period`.
+  lower(period))` sirve a "citas de la clínica 1 entre tal y tal hora" (RF20, RF21) mediante `Bitmap Index Scan`,
+  leyendo solo 9 bloques de los datos sobre las 4 014 citas del seed.
+- **GiST**: para rangos y solapamientos (`&&`). Los índices creados por las restricciones `EXCLUDE`
+  (`ex_schedules_overlap` y `ex_appointments_professional`) resuelven RF7 con `Index Only Scan` porque la consulta
+  de disponibilidad solo proyecta `period`.
+- **Índice parcial vs. índice completo en citas:** `ex_appointments_professional` lleva `WHERE
+  (appointment_status_id = 1)` porque solo las reservadas bloquean horario (I1, I7). Por eso la agenda completa del
+  profesional en todos los estados (RF20) necesita su propio índice B-tree `ix_appointments_prof_start`.
 - **Índice sobre una expresión** (`lower(period)`): solo se usa si la consulta filtra con **la misma expresión**,
-  por ejemplo `WHERE lower(period) >= $1`.
-- **Las restricciones crean su propio índice.** El `EXCLUDE` de citas ya es un índice GiST sobre
-  `(professional_id, period)` de las reservadas, y sirve también para calcular disponibilidad (RF7).
-- **Pendiente:** justificar cada índice con `EXPLAIN ANALYZE` (por eso los datos de demostración son grandes: con
-  10 filas el planificador nunca usaría un índice).
+  por ejemplo `WHERE lower(period) >= $1 AND lower(period) < $2`.
+- **Tres índices compuestos en `audit_logs` (RF19):** como la consulta de bitácora siempre filtra por `clinic_id` y
+  rango de `created_at`, y opcionalmente por `patient_id` o `user_id`, cada variante usa su índice compuesto
+  (`ix_audit_clinic_patient_date`, `ix_audit_clinic_user_date`, `ix_audit_clinic_date`) sobre las 5 331 filas del
+  seed.
+- **Por qué en tablas de 1 página aparece `Seq Scan`:** en el seed, `users` (20 filas), `services_per_professionals`
+  (18 filas) y `blockades` (4 filas) caben en una sola página de 8 KB (`Buffers: shared hit=1`). Leer el índice y
+  luego la tabla costaría 2 páginas en vez de 1, por lo que el optimizador elige `Seq Scan` hasta que la tabla
+  crece; con `SET LOCAL enable_seqscan = off` se comprueba que el índice resuelve la condición directamente.
 
 ### 4.10 Normalización y desnormalizaciones 🔴
 
