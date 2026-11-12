@@ -2141,7 +2141,7 @@ kubectl -n medicitas top pods             # la CPU de cada pod (metrics-server)
   pruebas.
 - **Documento de diseño ✔:** `docs/diseno.md`, que reúne el modelo, el multi-tenancy y el aislamiento.
 - **Colección de peticiones ✔:** `requests/medicitas.http`.
-- **`Uso_de_IA.md` ◐:** falta la sección de Emmanuel.
+- **`Uso_de_IA.md` ✔:** cómo se usó, en qué partes (una sección por integrante), las decisiones del grupo y qué se verificó a mano.
 - **Video ✘.**
 
 **Requisitos del profesor fuera de la rúbrica:**
