@@ -83,14 +83,18 @@ SQL
 
 # 2. Objetos de la base medicitas: los crea mc_owner para que quede como dueño
 #    y para que las funciones SECURITY DEFINER corran como mc_owner, no como superusuario.
+#    PGPASSWORD es la de mc_owner: en Compose se entra por el socket local y no se usa, pero en
+#    Kubernetes el script corre en un Job que entra por la red (k8s/11-db-init-job.yaml).
 for file in /opt/medicitas/sql/*.sql; do
     echo "medicitas: ejecutando $(basename "$file")"
-    psql -v ON_ERROR_STOP=1 --username mc_owner --dbname medicitas -f "$file"
+    PGPASSWORD="$DB_OWNER_PASSWORD" \
+        psql -v ON_ERROR_STOP=1 --username mc_owner --dbname medicitas -f "$file"
 done
 
 
 
-# 3. Marca de inicialización completa, que busca el healthcheck. Si algún script falla,
-#    la marca no se crea y el servicio nunca aparece sano (ver docker-compose.yml).
-touch /var/lib/postgresql/.medicitas-init-ok
+# 3. Marca de inicialización completa, que busca el healthcheck de Compose. Si algún script falla,
+#    la marca no se crea y el servicio nunca aparece sano (ver docker-compose.yml). En Kubernetes
+#    no hay healthcheck que la lea: el Job termina con éxito y la marca va a /tmp.
+touch "${MEDICITAS_INIT_MARKER:-/var/lib/postgresql/.medicitas-init-ok}"
 echo "medicitas: inicialización completa"

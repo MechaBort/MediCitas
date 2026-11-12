@@ -1,0 +1,64 @@
+# Inicialización de la base en Kubernetes: corre el MISMO db/init/00-init.sh que usa Compose.
+#
+# Por qué un Job y no postInitApplicationSQL del Cluster: postInitApplicationSQL corre como superusuario y solo SQL,
+# pero nuestro script crea los roles como superusuario y después ejecuta db/sql/*.sql como mc_owner, para que
+# mc_owner sea el dueño de todo y las funciones SECURITY DEFINER corran como mc_owner y no como superusuario. Con el
+# Job, los roles, los GRANT y el esquema tienen una sola fuente para Compose y Kubernetes.
+#
+# Un Job es un pod que corre hasta terminar. k8s/deploy.sh crea los ConfigMaps con los archivos del repositorio
+# (db-init-script y db-sql) y lo aplica cuando el Cluster ya está listo.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-init
+  namespace: medicitas
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: db-init
+          # La misma imagen que la base de Compose: trae psql y bash.
+          image: postgres:18-alpine
+          command: ["bash", "-c"]
+          # Si mc_owner ya existe, la base ya se inicializó (por ejemplo, al volver a correr deploy.sh): no se
+          # repite, porque CREATE ROLE fallaría y la base quedaría a medias.
+          args:
+            - |
+              set -euo pipefail
+              if psql --username "$POSTGRES_USER" --dbname postgres -tAc \
+                   "SELECT 1 FROM pg_roles WHERE rolname = 'mc_owner'" | grep -q 1; then
+                echo "medicitas: la base ya estaba inicializada; no se repite"
+                exit 0
+              fi
+              exec bash /init/00-init.sh
+          env:
+            # Entra por la red al servicio principal del Cluster (no por un socket local, como en Compose).
+            - name: PGHOST
+              value: medicitas-db-rw
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: medicitas-db-superuser, key: username } }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: medicitas-db-superuser, key: password } }
+            - name: MEDICITAS_INIT_MARKER
+              value: /tmp/medicitas-init-ok
+            # Las contraseñas que el script asigna a cada rol, desde .env (ver k8s/deploy.sh).
+            - name: DB_OWNER_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-passwords, key: DB_OWNER_PASSWORD } }
+            - name: DB_ADMIN_SVC_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-passwords, key: DB_ADMIN_SVC_PASSWORD } }
+            - name: DB_AGENDA_SVC_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-passwords, key: DB_AGENDA_SVC_PASSWORD } }
+            - name: DB_CLINICAL_SVC_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-passwords, key: DB_CLINICAL_SVC_PASSWORD } }
+            - name: KEYCLOAK_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-passwords, key: KEYCLOAK_DB_PASSWORD } }
+          volumeMounts:
+            - { name: init-script, mountPath: /init, readOnly: true }
+            - { name: sql, mountPath: /opt/medicitas/sql, readOnly: true }
+      volumes:
+        - name: init-script
+          configMap: { name: db-init-script }
+        - name: sql
+          configMap: { name: db-sql }

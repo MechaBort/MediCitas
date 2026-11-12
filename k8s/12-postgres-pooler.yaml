@@ -1,0 +1,33 @@
+# PgBouncer delante de PostgreSQL, administrado por CloudNativePG (recurso Pooler).
+#
+# Los servicios se conectan a medicitas-db-pooler-rw, no a la base. Cada copia de un servicio abre hasta 10 conexiones
+# (el pool de packages/common/src/db.js) contra PgBouncer, que son baratas; PgBouncer las reparte sobre pocas conexiones
+# reales a PostgreSQL. Así, que agenda escale a muchas copias con el HPA (paso 3) no agota las conexiones de la base.
+#
+# Modo transacción: una conexión real se presta solo mientras dura una transacción. Es compatible con el código porque
+# todo pasa por withTransaction, que usa SET LOCAL ROLE (dura hasta el COMMIT). Con SET ROLE sin LOCAL, el rol quedaría
+# pegado a la conexión real y lo heredaría la petición siguiente: por eso está prohibido (AGENTS.md).
+#
+# La autenticación la configura el operador: crea el usuario cnpg_pooler_pgbouncer y la función user_search en la base
+# postgres, con la que PgBouncer verifica las contraseñas de mc_admin_svc, mc_agenda_svc y mc_clinical_svc.
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: medicitas-db-pooler-rw
+  namespace: medicitas
+spec:
+  cluster:
+    name: medicitas-db
+  type: rw
+  # Dos copias de PgBouncer, para que no sea un punto único de falla.
+  instances: 2
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      # Conexiones reales por cada par (usuario, base) y por cada copia de PgBouncer. Con 2 copias, cada usuario de
+      # servicio usa como máximo 2 × 10 = 20 conexiones reales: cabe en los CONNECTION LIMIT de db/init/00-init.sh
+      # (admin 20, agenda 40, clinical 20). En total, 60 de las 100 de max_connections; el resto queda para Keycloak.
+      default_pool_size: "10"
+      # Conexiones de clientes (las copias de los servicios) que acepta cada PgBouncer. Son baratas: 1000 alcanzan
+      # para 100 copias de agenda con su pool de 10.
+      max_client_conn: "1000"

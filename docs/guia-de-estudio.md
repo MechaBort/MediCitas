@@ -42,6 +42,7 @@ y la [sección 4.2](#42-las-tablas-por-área-y-por-schema-). El diseño completo
 - [Parte 7. Redis](#parte-7-redis) 🟡
 - [Parte 8. La aplicación Node](#parte-8-la-aplicación-node) 🟡
 - [Parte 9. Documentación generada](#parte-9-documentación-generada) ⚪
+- [Parte 9b. Kubernetes](#parte-9b-kubernetes) 🔴
 - [Parte 10. Estado de los requisitos](#parte-10-estado-de-los-requisitos)
 - [Parte 11. Autoevaluación](#parte-11-autoevaluación)
 - [Parte 12. Glosario](#parte-12-glosario)
@@ -1972,6 +1973,65 @@ por petición.
 ```
 
 ---
+
+## Parte 9b. Kubernetes
+
+El profesor pidió ver el sistema corriendo en Kubernetes, no solo en Compose. Es un requisito mínimo y tiene
+prioridad sobre Compose. Los dos no corren a la vez ni comparten datos.
+
+### 9b.1 Las piezas, desde cero 🔴
+
+**Kubernetes** es un sistema que mantiene corriendo lo que uno le **declara**. No se le dice "arranca este
+contenedor", sino "quiero que existan dos copias de esto". Él se encarga de que existan, y si una copia muere, crea
+otra. Lo que hay que conocer:
+
+| Pieza | Qué es | En MediCitas |
+|---|---|---|
+| **Pod** | La unidad mínima: uno o más contenedores que corren juntos | Cada copia de `agenda`, la base o un PgBouncer |
+| **Deployment** | "Quiero N copias de este pod". Si una muere, crea otra | Los servicios y PgBouncer |
+| **Service** | Un nombre y una dirección fijos que reparten el tráfico entre las copias | `medicitas-db-rw`, `medicitas-db-pooler-rw` |
+| **Job** | Un pod que corre una vez hasta terminar | `db-init`, la inicialización de la base |
+| **ConfigMap / Secret** | Archivos o valores que se montan en los pods; los Secrets guardan contraseñas | Los `db/sql/*.sql` y las contraseñas de `.env` |
+| **Namespace** | Un espacio que agrupa recursos y se borra de una vez | `medicitas` |
+| **Operador** | Un programa dentro del clúster que sabe administrar una aplicación concreta | CloudNativePG, que administra PostgreSQL |
+
+**minikube** es un Kubernetes de un solo nodo que corre en la laptop, dentro de un contenedor de Docker.
+
+### 9b.2 Paso 1: PostgreSQL con CloudNativePG y PgBouncer 🔴
+
+Todo se despliega con `./k8s/deploy.sh`, con los manifiestos numerados de `k8s/`:
+
+1. **El operador CloudNativePG 1.30.1** se instala en su propio namespace, `cnpg-system`.
+2. **`k8s/10-postgres-cluster.yaml`** declara un `Cluster`: PostgreSQL 18, una instancia y 1 GB de disco. El operador
+   crea el pod, el disco y el Service `medicitas-db-rw`. Si el pod se cae, lo vuelve a levantar con el mismo disco.
+3. **`k8s/11-db-init-job.yaml`** es un Job que ejecuta **el mismo `db/init/00-init.sh` de Compose**: crea los roles
+   como superusuario y después ejecuta `db/sql/*.sql` como `mc_owner`. Así las tablas y las funciones
+   `SECURITY DEFINER` quedan a nombre de `mc_owner`, igual que en Compose.
+4. **`k8s/12-postgres-pooler.yaml`** declara un `Pooler`: dos copias de PgBouncer en modo transacción. Los servicios
+   se conectarán a `medicitas-db-pooler-rw`, no directo a la base.
+
+**Por qué PgBouncer.** Cada copia de un servicio abre hasta 10 conexiones. Si `agenda` escala a 10 copias, serían 100
+conexiones reales, más de lo que la base soporta bien (sección 6 de `docs/diseno-servicios.md`). PgBouncer recibe
+esas conexiones, que son baratas, y las reparte sobre 10 conexiones reales por usuario y por copia de PgBouncer. Solo
+presta una conexión real mientras dura una transacción, y por eso el código usa `SET LOCAL ROLE`, que termina con el
+COMMIT.
+
+**E40. Comprobar el paso 1** (con minikube arriba y `./k8s/deploy.sh` ejecutado):
+
+```bash
+kubectl -n medicitas get cluster,pooler,pods              # el Cluster "healthy", el Job "Completed", 2 PgBouncer
+kubectl -n medicitas logs job/db-init                     # "medicitas: ejecutando 01-schema.sql" … "inicialización completa"
+kubectl -n medicitas run psql --rm -it --image=postgres:18-alpine --env=PGPASSWORD=mc_agenda_svc_dev -- \
+  psql -h medicitas-db-pooler-rw -U mc_agenda_svc -d medicitas
+#   SHOW search_path;                                     -> admin, agenda, clinical, public
+#   BEGIN; SET LOCAL ROLE mc_reception; SELECT count(*) FROM appointments; COMMIT;
+#   BEGIN; SET LOCAL ROLE mc_platform;                    -> ERROR: permission denied (agenda no atiende la plataforma)
+```
+
+**Preguntas de control.**
+- ¿Por qué la base se inicializa con un Job y no con el SQL de inicialización que ofrece el operador?
+- Si `agenda` escala a 20 copias, ¿cuántas conexiones reales abre contra PostgreSQL? ¿Por qué?
+- ¿Qué pasaría con PgBouncer en modo transacción si el código usara `SET ROLE` sin `LOCAL`?
 
 ## Parte 10. Estado de los requisitos
 
