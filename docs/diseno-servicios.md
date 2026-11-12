@@ -85,6 +85,41 @@ disponibilidad, citas y reportes.
 - **Lo que se sacrifica.** La ruta de RF9 cambió de forma, aunque no de comportamiento: sus 13 pruebas pasan sin
   cambios.
 
+**Decisión de la rama `agenda-reportes`: la agenda del día y el conteo por estado tienen sus propias rutas (RF20,
+RF21).**
+- **Problema.** RF20 (la agenda del día) y RF21 (contar citas por estado en un rango) leen las mismas citas que el
+  resto de `agenda`, pero con otros permisos: `agenda.read` (los tres roles de clínica) y `reports.read` (solo el
+  administrador). Además, `GET /appointments` ya lo usa RF16 (historial de un paciente), con `patient_history.read`.
+- **Elegido.**
+  - RF20: `GET /agenda?date=…`, con un `professionalId` opcional para ver solo a ese profesional.
+  - RF21: `GET /reports/appointments-by-status?from=…&to=…`, también con un `professionalId` opcional.
+  - Cada una va en su archivo (`routes/agenda.js` y `routes/reports.js`), bajo prefijos que el gateway ya enviaba
+    a `agenda`.
+  - **"Las citas del día"** son las que empiezan ese día en la hora local de la clínica. Esa condición sobre
+    `lower(period)` es la que pueden usar `ix_appointments_clinic_start` e `ix_appointments_prof_start`.
+  - **RF20 muestra todos los estados,** también canceladas y reprogramadas, ordenadas por hora, con los nombres del
+    paciente, el profesional y el servicio. No lee los contactos del paciente, que exigirían registrar el acceso en
+    la bitácora (RF18).
+  - **El profesional ve la agenda de toda la clínica,** porque la matriz le da `agenda.read` sin la variante "solo lo
+    propio". Es el mismo criterio que con el desenlace (RF12).
+  - **RF21 devuelve los cinco estados, aunque den cero,** y el total.
+- **Alternativas descartadas.**
+  - `GET /appointments?date=…` para RF20: mezclaría dos permisos en la misma ruta, que ya es de RF16.
+  - Mostrar solo las reservadas: recepción perdería de vista las cancelaciones del día.
+- **Lo que se sacrifica.** Dos prefijos más en la API, aunque el gateway ya los tenía reservados desde la etapa 5.
+
+**Decisión: RF21 acepta como máximo 366 días; RF8, 31.**
+- **Problema.** Las dos reciben un rango de fechas, pero cuestan distinto.
+  - RF8 calcula huecos por profesional y día, y devuelve cada espacio. Lo usa recepción todo el día.
+  - RF21 hace un solo `COUNT` agrupado sobre las citas que empiezan en el rango, recorriendo el índice
+    `ix_appointments_clinic_start`, y siempre devuelve cinco números. Lo usa solo el administrador, de vez en cuando.
+- **Elegido.** 366 días, un año completo aunque sea bisiesto. Medido con `EXPLAIN ANALYZE` sobre el seed: un año de
+  la clínica de San José (1 444 citas) se cuenta en ~4 ms por el índice. El costo crece con las citas del rango, no
+  con los días: una clínica con 40 000 citas al año rondaría los 100 ms. En Kubernetes, con réplica (sección 7), esta
+  lectura puede ir al servicio `-ro`.
+- **Alternativa descartada.** Sin tope: alguien podría pedir diez años de una sola vez.
+- **Lo que se sacrifica.** Para comparar varios años, el cliente hace una consulta por año.
+
 ---
 
 ## 2. Estructura del repositorio
@@ -450,7 +485,7 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   en milisegundos en vez de quedar esperando. La copia vieja de ese día deja de leerse, a más tardar, cuando vence
   (60 s; ver la decisión del vencimiento en `comparacion-arquitecturas.md`, "Si Redis falla").
 
-**Decisión de la rama `cache-rf7`: cómo se lee la caché (RF7, RF8).**
+**Decisión de la rama `cache-redis`: cómo se lee la caché (RF7, RF8).**
 - **Problema.** La copia de un día debe ser siempre la que corresponde a la versión vigente de esa agenda (I8), aunque
   una reserva se confirme a la mitad de una consulta.
 - **Elegido.** Tres pasos, en este orden (`services/agenda/src/availability-cache.js`):
@@ -472,7 +507,7 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   reservar, o un candado.
 - **Lo que se sacrifica.** En una consulta que no encuentra la copia, RF8 hace dos transacciones en lugar de una.
 
-**Decisión de la rama `cache-rf7`: el header `X-MediCitas-Cache`.**
+**Decisión de la rama `cache-redis`: el header `X-MediCitas-Cache`.**
 - **Problema.** Sin una señal en la respuesta, una prueba no puede distinguir si la caché funciona. La prueba de I8
   pasaba igual con caché y sin ella, porque solo miraba los espacios.
 - **Elegido.** RF7 y RF8 responden `X-MediCitas-Cache: hit | miss | off`. Las pruebas comprueban la secuencia
@@ -481,7 +516,7 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   las estadísticas de Redis, que dan el total pero no el de cada petición.
 - **Lo que se sacrifica.** La respuesta revela un detalle interno, pero no expone ningún dato.
 
-**Decisión de la rama `cache-rf7`: la conexión a Redis tiene su propio archivo.**
+**Decisión de la rama `cache-redis`: la conexión a Redis tiene su propio archivo.**
 - **Problema.** La conexión la creaba `agenda-version.js`, y ahora también la usa la caché.
 - **Elegido.** La conexión se movió sin cambios a `services/agenda/src/redis.js` (`redis` y `closeRedis`), de donde
   la importan las versiones y la caché.

@@ -1047,3 +1047,65 @@ espacios en el rango no aparece.
 | 200 | Devuelve los espacios, aunque la lista esté vacía |
 | 400 | Parámetros inválidos (falta uno, fecha imposible como `2030-02-30`, id que no es un número, un parámetro que no se admite como `clinicId`), el profesional no atiende ese servicio (RF7), o en RF8 un rango al revés o de más de 31 días |
 | 404 | El profesional o el servicio no existe, está dado de baja o es de otra clínica (I5) |
+
+### `GET /agenda?date=…` (RF20)
+Permiso `agenda.read` (administrador de clínica, recepción y profesional). La agenda del día: las citas que empiezan
+ese día en la hora local de la clínica, **en todos los estados** (también canceladas y reprogramadas), ordenadas por
+hora. Con `professionalId`, solo las de ese profesional; sin él, las de toda la clínica. El profesional también puede
+ver la de toda la clínica, como indica la matriz.
+
+- `date`: día `YYYY-MM-DD` (obligatorio).
+- `professionalId`: opcional.
+
+```json
+{
+  "date": "2026-11-12",
+  "professionalId": 6,
+  "appointments": [
+    {
+      "appointmentId": 812,
+      "start": "2026-11-12T14:00:00.000Z",
+      "end": "2026-11-12T14:30:00.000Z",
+      "status": "reservada",
+      "description": "Control",
+      "professional": { "professionalId": 6, "name": "Laura Mora Jiménez" },
+      "patient": { "patientId": 1, "name": "Carlos Chaves Ramos" },
+      "service": { "serviceId": 2, "name": "Consulta general" }
+    }
+  ]
+}
+```
+
+No incluye los contactos del paciente, porque leerlos se registraría en la bitácora (RF18).
+
+| Código | Caso |
+|---|---|
+| 200 | La agenda, aunque esté vacía |
+| 400 | Parámetros inválidos: falta `date`, fecha imposible, `professionalId` que no es un número o un parámetro que no se admite, como `clinicId` |
+| 404 | El profesional no existe o es de otra clínica (I5) |
+
+### `GET /reports/appointments-by-status?from=…&to=…` (RF21)
+Permiso `reports.read` (solo el administrador de clínica). Cuenta por estado las citas que empiezan entre `from` y
+`to`, inclusive y en la hora local de la clínica, con un rango de **como máximo 366 días**. Con `professionalId`,
+solo las de ese profesional. Los cinco estados aparecen siempre, aunque den cero.
+
+```json
+{
+  "from": "2026-11-01",
+  "to": "2026-11-30",
+  "professionalId": null,
+  "total": 177,
+  "byStatus": { "reservada": 30, "atendida": 120, "ausente": 15, "cancelada": 8, "reprogramada": 4 }
+}
+```
+
+Es una consulta agregada sobre la base transaccional, como pide el enunciado: la analítica real es de la Etapa 2.
+Recorre el índice `ix_appointments_clinic_start`; un año de la clínica de San José del seed (1 444 citas) se cuenta
+en ~4 ms.
+
+| Código | Caso |
+|---|---|
+| 200 | Los conteos |
+| 400 | Parámetros inválidos, un rango al revés o de más de 366 días |
+| 403 | El rol no tiene `reports.read` (recepción, profesional) |
+| 404 | El profesional no existe o es de otra clínica (I5) |

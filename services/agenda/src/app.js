@@ -2,6 +2,8 @@ import express from 'express';
 import { pool } from '@medicitas/common/db';
 import { authenticate, identify } from '@medicitas/common/auth';
 import { toResponse } from '@medicitas/common/errors';
+import { agendaRouter } from './routes/agenda.js';
+import { reportsRouter } from './routes/reports.js';
 import { appointmentsRouter } from './routes/appointments.js';
 import { availabilityRouter } from './routes/availability.js';
 
@@ -36,6 +38,8 @@ app.use(['/schedules', '/blockades', '/availability', '/appointments', '/agenda'
 // Cada router pide con requirePermission el permiso específico de cada ruta.
 app.use('/appointments', appointmentsRouter);
 app.use('/availability', availabilityRouter);
+app.use('/agenda', agendaRouter);      // RF20
+app.use('/reports', reportsRouter);    // RF21
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Ruta no encontrada' });

@@ -1572,7 +1572,7 @@ curl -s -X POST http://localhost:8080/realms/medicitas/protocol/openid-connect/t
 ### 7.1 Para qué está 🟡
 
 RF7 (espacios disponibles de un profesional en una fecha) es la consulta más frecuente del sistema. Desde la rama
-`cache-rf7` se usa el patrón **cache-aside**: el servicio `agenda` busca primero en Redis; si no encuentra la copia,
+`cache-redis` se usa el patrón **cache-aside**: el servicio `agenda` busca primero en Redis; si no encuentra la copia,
 la calcula en PostgreSQL y la guarda. Lo que se guarda son los **huecos libres** de cada profesional y día, no los
 espacios: cada servicio los corta con su propia duración, así que una sola copia sirve para todos sus servicios, y
 RF8 reutiliza las mismas copias día por día. El código está en `services/agenda/src/availability-cache.js`, y la
@@ -1638,7 +1638,8 @@ servicios y el gateway:
 packages/common/src/      auth.js, db.js, errors.js     ← los usan los tres servicios
 services/admin/src/       app.js, server.js, accounts.js, keycloak.js, routes/clinics.js, routes/users.js
 services/agenda/src/      app.js, server.js, redis.js, agenda-version.js, availability.js, availability-cache.js,
-                          slots.js, routes/appointments.js, routes/availability.js
+                          slots.js, routes/appointments.js, routes/availability.js, routes/agenda.js,
+                          routes/reports.js
 services/clinical/src/    app.js, server.js             ← sin rutas todavía
 gateway/nginx.conf        el reparto de rutas
 ```
@@ -1843,7 +1844,7 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   PostgreSQL usaba unos 2,7 núcleos. Por eso, para escalar, además de la caché hacen falta varias copias de `agenda`
   (el HPA).
 
-**La caché de RF7, en la rama `cache-rf7`** 🔴 (el mecanismo está en la Parte 7)
+**La caché de RF7, en la rama `cache-redis`** 🔴 (el mecanismo está en la Parte 7)
 
 - **Las rutas siguen tres pasos.** Primero leen Redis (`readCachedGaps`). Después hacen la transacción en la base:
   la validación de siempre y, solo para los pares que faltaron, `computeGaps`. Por último, después del COMMIT,
@@ -1866,6 +1867,37 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   - Con una copia de `agenda`: unas 963 consultas por segundo, frente a 716 sin caché, y p95 de 81 ms, frente a 111.
   - Con tres copias: unas 2 415 por segundo, frente a 1 714, y la base baja de unos 8,2 núcleos a 5,6.
   - La base hace la mitad del trabajo por consulta, y cada copia de `agenda` sigue limitada por su CPU.
+
+**La agenda del día y el conteo por estado (RF20, RF21), en la rama `agenda-reportes`** 🔴
+
+- **RF20: `GET /agenda?date=…`**, con un `professionalId` opcional y el permiso `agenda.read`.
+  - Muestra las citas que empiezan ese día en la hora local de la clínica, en todos los estados, ordenadas por hora.
+    Cada una trae los nombres del paciente, el profesional y el servicio.
+  - Incluye las canceladas para que recepción vea todo lo que pasó en el día.
+  - No lee los contactos del paciente: esos sí tendrían que registrarse en la bitácora (RF18).
+  - El profesional también ve la agenda de toda la clínica, porque la matriz no le da la variante "solo lo propio".
+- **RF21: `GET /reports/appointments-by-status?from=…&to=…`**, con un `professionalId` opcional y el permiso
+  `reports.read`, que solo tiene el administrador.
+  - Es un `COUNT` agrupado por estado. Parte del catálogo de estados con un `LEFT JOIN`, para que los estados sin
+    citas aparezcan con 0.
+- **Por qué RF21 acepta 366 días y RF8 solo 31.** RF8 calcula huecos por cada profesional y cada día, devuelve cada
+  espacio y lo usa recepción todo el día. RF21 solo cuenta citas recorriendo un índice, siempre responde cinco números
+  y lo pide el administrador de vez en cuando. Su costo crece con las citas del rango, no con los días.
+- **`EXPLAIN ANALYZE` con el seed:**
+  - RF20 de toda la clínica usa `ix_appointments_clinic_start` (~2 ms);
+  - RF20 de un profesional usa `ix_appointments_prof_start` (~0,6 ms);
+  - RF21 de un año usa `ix_appointments_clinic_start` y cuenta 1 444 citas en ~4 ms.
+- **La condición que permite usar el índice.** Los dos índices son sobre la expresión `lower(period)`, y la consulta
+  filtra con esa misma expresión: `lower(a.period) >= inicio del día AND lower(a.period) < inicio del día siguiente`.
+  Un índice sobre una expresión solo se usa si la consulta escribe la misma expresión.
+- **Las pruebas (`tests/integration/agenda-reports.test.js`, 9).**
+  - RF20: el orden, los estados y los nombres; toda la clínica; I5 (una cita de Cartago no aparece y su
+    profesional responde 404); permisos y validación.
+  - RF21: los conteos exactos de un profesional. En un día futuro hay una cancelada, una reprogramada y dos
+    reservadas, una de ellas la nueva de la reprogramación. En un día pasado, una atendida y una ausente.
+  - RF21 también prueba los cinco estados con cero, el tope de 366 días y que solo el administrador puede contar.
+  - El `professionalId` opcional de RF21 hace exactos los conteos de la prueba. Con toda la clínica, otras pruebas
+    que corren al mismo tiempo podrían sumar citas a ese día.
 
 ### 8.4 El gateway 🔴
 
@@ -1931,8 +1963,8 @@ por petición.
 | RF17 | Autenticación y matriz de permisos | ✔ realm, roles, matriz | ✔ `authenticate`, `identify`, `requirePermission` |
 | RF18 | Bitácora de accesos | ◐ tabla protegida; registrar cada acceso lo hace la API | ✘ |
 | RF19 | Consultar la bitácora con filtros | ✔ índices | ✘ |
-| RF20 | Agenda del día | ✔ índices; permiso propuesto | ✘ |
-| RF21 | Conteo por estado | ✔ consulta (E23) | ✘ |
+| RF20 | Agenda del día | ✔ índices `ix_appointments_clinic_start` e `ix_appointments_prof_start` | ✔ `GET /agenda?date=…` (servicio `agenda`), con pruebas |
+| RF21 | Conteo por estado | ✔ consulta (E23) | ✔ `GET /reports/appointments-by-status`, hasta 366 días, con pruebas |
 
 **Otros entregables:** pruebas automatizadas ◐: el arnés (`npm test`) y las pruebas de RF1, RF2, RF17, la
 traducción de errores, el gateway y la fuga en `/users` están hechas (etapa 6); faltan carrera, fugas del resto de
