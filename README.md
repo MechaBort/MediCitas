@@ -533,7 +533,9 @@ fuera de la aplicación (Módulo §9).
 ==============================================================
 
 Postgres crea automáticamente un índice por cada PK, `UNIQUE` y `EXCLUDE`, pero no por cada FK. Cada índice se
-justificará con `EXPLAIN ANALYZE` de su consulta una vez cargados los datos semilla.
+justifica abajo con `EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)` sobre los datos semilla de `db/sql/04-seed.sql`
+(`appointments`: 4 014 filas; `audit_logs`: 5 331; `clinical_notes`: 1 317; `professional_schedules`: 816;
+`patient_contacts`: 407; `patients`: 240).
 
 ### Creados por restricciones (no se declaran aparte)
 | Índice | Tipo | Consulta que sirve |
@@ -578,6 +580,195 @@ Los índices sobre `lower(period)` solo se usan si la consulta filtra con la mis
 No se crea un índice aparte sobre `ProfessionalSchedules (clinicId, professionalId, period)`: el del `EXCLUDE` ya
 cubre `(professionalId, period)` y anteponer `clinicId` no filtra nada más, porque cada profesional pertenece a
 una sola clínica. Solo encarecería las escrituras.
+
+### Justificación con `EXPLAIN ANALYZE` sobre los datos semilla
+
+#### 1. Disponibilidad por profesional y día (RF7, I3, I1): `ex_schedules_overlap` y `ex_appointments_professional`
+Las dos restricciones `EXCLUDE USING gist` cumplen una doble función: impiden solapamientos al escribir y sirven
+como índices espaciales GiST para el operador de solapamiento de rangos (`&&`) al calcular los huecos libres de un
+día (`services/agenda/src/availability.js`). Como la consulta solo proyecta `period`, PostgreSQL resuelve ambas
+con **Index Only Scan**:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT period FROM agenda.professional_schedules
+ WHERE professional_id = 6
+   AND period && tstzrange('2026-11-16 00:00:00-06', '2026-11-17 00:00:00-06', '[)');
+```
+```text
+Index Only Scan using ex_schedules_overlap on professional_schedules (actual time=3.822..3.824 rows=2.00 loops=1)
+  Index Cond: ((professional_id = 6) AND (period && '["2026-11-16 06:00:00+00","2026-11-17 06:00:00+00")'::tstzrange))
+  Heap Fetches: 2
+  Index Searches: 1
+```
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT period FROM agenda.appointments
+ WHERE professional_id = 6
+   AND appointment_status_id = 1
+   AND period && tstzrange('2026-11-16 00:00:00-06', '2026-11-17 00:00:00-06', '[)');
+```
+```text
+Index Only Scan using ex_appointments_professional on appointments (actual time=0.501..0.503 rows=6.00 loops=1)
+  Index Cond: ((professional_id = 6) AND (period && '["2026-11-16 06:00:00+00","2026-11-17 06:00:00+00")'::tstzrange))
+  Heap Fetches: 0
+  Index Searches: 1
+  Buffers: shared hit=1 read=2
+```
+
+#### 2. Agenda de la clínica y reportes por rango de fechas (RF20, RF21): `ix_appointments_clinic_start`
+Filtra por `clinic_id` y por la expresión funcional `lower(period)`. Sobre las 4 014 citas del seed, lee únicamente
+9 bloques del heap en lugar de recorrer toda la tabla:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT appointment_id, appointment_status_id, period
+  FROM agenda.appointments
+ WHERE clinic_id = 1
+   AND lower(period) >= '2026-11-01 00:00:00-06'
+   AND lower(period) <  '2026-11-08 00:00:00-06';
+```
+```text
+Bitmap Heap Scan on appointments (actual time=0.719..1.887 rows=112.00 loops=1)
+  Recheck Cond: ((clinic_id = 1) AND (lower(period) >= '2026-11-01 06:00:00+00'::timestamptz) AND (lower(period) < '2026-11-08 06:00:00+00'::timestamptz))
+  Heap Blocks: exact=9
+  Buffers: shared hit=1 read=11
+  ->  Bitmap Index Scan on ix_appointments_clinic_start (actual time=0.682..0.682 rows=112.00 loops=1)
+        Index Cond: ((clinic_id = 1) AND (lower(period) >= '2026-11-01 06:00:00+00'::timestamptz) AND (lower(period) < '2026-11-08 06:00:00+00'::timestamptz))
+```
+
+#### 3. Agenda de un profesional en todos los estados (RF20): `ix_appointments_prof_start`
+El índice parcial `ex_appointments_professional` solo indexa citas `reservada` (`appointment_status_id = 1`). Para
+ver la agenda completa de un profesional incluyendo citas atendidas, ausentes y canceladas (RF20), el planificador
+usa `ix_appointments_prof_start`:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT appointment_id, appointment_status_id, period
+  FROM agenda.appointments
+ WHERE professional_id = 6
+   AND lower(period) >= '2026-11-01 00:00:00-06'
+   AND lower(period) <  '2026-11-08 00:00:00-06';
+```
+```text
+Bitmap Heap Scan on appointments (actual time=0.386..0.394 rows=50.00 loops=1)
+  Recheck Cond: ((professional_id = 6) AND (lower(period) >= '2026-11-01 06:00:00+00'::timestamptz) AND (lower(period) < '2026-11-08 06:00:00+00'::timestamptz))
+  Heap Blocks: exact=7
+  Buffers: shared hit=8 read=2
+  ->  Bitmap Index Scan on ix_appointments_prof_start (actual time=0.380..0.380 rows=50.00 loops=1)
+        Index Cond: ((professional_id = 6) AND (lower(period) >= '2026-11-01 06:00:00+00'::timestamptz) AND (lower(period) < '2026-11-08 06:00:00+00'::timestamptz))
+```
+
+#### 4. Historial de citas de un paciente (RF16): `ix_appointments_patient_start`
+Recupera las 15 citas históricas y futuras de un paciente entre las 4 014 filas sin recorrido secuencial:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT appointment_id, professional_id, service_id, appointment_status_id, period
+  FROM agenda.appointments
+ WHERE clinic_id = 1 AND patient_id = 10
+ ORDER BY lower(period) DESC;
+```
+```text
+Sort (actual time=1.097..1.097 rows=15.00 loops=1)
+  Sort Key: (lower(period)) DESC
+  Sort Method: quicksort  Memory: 25kB
+  ->  Bitmap Heap Scan on appointments (actual time=0.024..1.064 rows=15.00 loops=1)
+        Recheck Cond: (patient_id = 10)
+        Filter: (clinic_id = 1)
+        Heap Blocks: exact=15
+        ->  Bitmap Index Scan on ix_appointments_patient_start (actual time=0.016..0.016 rows=15.00 loops=1)
+              Index Cond: (patient_id = 10)
+```
+
+#### 5. Contactos de un paciente (RF14, RF18): `ix_patient_contacts_patient`
+```sql
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT contact_id, contact_type_id, contact_value
+  FROM clinical.patient_contacts
+ WHERE clinic_id = 1 AND patient_id = 10 AND is_active;
+```
+```text
+Bitmap Heap Scan on patient_contacts (actual time=0.041..0.042 rows=2.00 loops=1)
+  Recheck Cond: (patient_id = 10)
+  Filter: (is_active AND (clinic_id = 1))
+  Heap Blocks: exact=2
+  ->  Bitmap Index Scan on ix_patient_contacts_patient (actual time=0.036..0.036 rows=2.00 loops=1)
+        Index Cond: (patient_id = 10)
+```
+
+#### 6. Consultas de la bitácora de auditoría (RF19): `ix_audit_clinic_patient_date`, `ix_audit_clinic_user_date`, `ix_audit_clinic_date`
+Sobre las 5 331 entradas de `clinical.audit_logs`, cada combinación de filtros de RF19 (por paciente + fechas, por
+usuario + fechas o solo por fechas de la clínica) utiliza su índice compuesto específico:
+
+```sql
+-- Por paciente y rango de fechas:
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT log_id, user_id, event_type_id, data_object_id, object_id, created_at
+  FROM clinical.audit_logs
+ WHERE clinic_id = 1 AND patient_id = 10 AND created_at >= now() - interval '30 days'
+ ORDER BY created_at DESC;
+```
+```text
+Sort (actual time=0.530..0.531 rows=12.00 loops=1)
+  Sort Key: created_at DESC
+  ->  Bitmap Heap Scan on audit_logs (actual time=0.463..0.515 rows=12.00 loops=1)
+        Recheck Cond: ((clinic_id = 1) AND (patient_id = 10) AND (created_at >= (now() - '30 days'::interval)))
+        ->  Bitmap Index Scan on ix_audit_clinic_patient_date (actual time=0.451..0.451 rows=12.00 loops=1)
+```
+
+```sql
+-- Por usuario y rango de fechas:
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT log_id, patient_id, event_type_id, data_object_id, object_id, created_at
+  FROM clinical.audit_logs
+ WHERE clinic_id = 1 AND user_id = 4 AND created_at >= now() - interval '30 days'
+ ORDER BY created_at DESC;
+```
+```text
+Sort (actual time=1.317..1.342 rows=820.00 loops=1)
+  Sort Key: created_at DESC
+  ->  Bitmap Heap Scan on audit_logs (actual time=1.045..1.196 rows=820.00 loops=1)
+        Recheck Cond: ((clinic_id = 1) AND (user_id = 4) AND (created_at >= (now() - '30 days'::interval)))
+        ->  Bitmap Index Scan on ix_audit_clinic_user_date (actual time=1.029..1.029 rows=820.00 loops=1)
+```
+
+```sql
+-- Solo por clínica y rango de fechas:
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT log_id, user_id, patient_id, event_type_id, created_at
+  FROM clinical.audit_logs
+ WHERE clinic_id = 1 AND created_at >= now() - interval '7 days'
+ ORDER BY created_at DESC;
+```
+```text
+Sort (actual time=0.704..0.720 rows=497.00 loops=1)
+  Sort Key: created_at DESC
+  ->  Bitmap Heap Scan on audit_logs (actual time=0.566..0.638 rows=497.00 loops=1)
+        Recheck Cond: ((clinic_id = 1) AND (created_at >= (now() - '7 days'::interval)))
+        ->  Bitmap Index Scan on ix_audit_clinic_date (actual time=0.557..0.557 rows=497.00 loops=1)
+```
+
+#### 7. Tablas de catálogo/configuración de una sola página en el seed (`ix_spp_clinic_service`, `ix_blockades_prof_period`, `users_keycloak_sub_key`)
+En el seed, `services_per_professionals` (18 filas), `blockades` (4 filas) y `users` (20 filas) caben cada una en
+**una sola página de 8 KB** (`Buffers: shared hit=1`). El optimizador de costos de PostgreSQL elige `Seq Scan`
+cuando una tabla ocupa 1 página porque un `Index Scan` leería al menos 2 páginas (1 del índice + 1 de la tabla). Al
+crecer el número de clínicas y profesionales, o al deshabilitar `enable_seqscan` para verificar la estructura del
+índice, PostgreSQL utiliza el índice directamente:
+
+```sql
+SET LOCAL enable_seqscan = off;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF)
+SELECT professional_id
+  FROM admin.services_per_professionals
+ WHERE clinic_id = 1 AND service_id = 1 AND is_active;
+```
+```text
+Index Scan using ix_spp_clinic_service on services_per_professionals (actual time=0.270..0.271 rows=1.00 loops=1)
+  Index Cond: ((clinic_id = 1) AND (service_id = 1))
+  Filter: is_active
+```
 
 ==============================================================
 |        			   DECISIONES DE DISEÑO           	     |
@@ -839,6 +1030,11 @@ ejemplo, mandar `clinicId`: la clínica siempre sale del token).
 
 Códigos comunes a todas las rutas protegidas: 401 sin token válido, 403 sin el permiso, 400 si el body o los
 parámetros no son válidos o el JSON está mal formado.
+
+- **Colección de peticiones versionada (§5 del enunciado):** `requests/medicitas.http`, compatible con REST Client
+  (VS Code) y JetBrains HTTP Client, con la obtención de tokens de Keycloak, el ciclo completo de una cita
+  (disponibilidad → reserva → reprogramación → cancelación/desenlace) y los casos de rechazo `400`, `401`, `403`,
+  `404` y `409`.
 
 ### Errores de las reglas de negocio
 Varias reglas las garantiza la base de datos. Cuando una operación las viola, la API responde así
