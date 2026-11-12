@@ -426,7 +426,7 @@ CREATE TABLE admin.severities (
     description     VARCHAR(100) NOT NULL
 );
 
--- RF18 / RF19: append-only, protegida en el motor (I6).
+-- RF18 / RF19: append-only, protegida en el motor (I6) y con cadena de huellas SHA-256 por clínica (§9).
 CREATE TABLE clinical.audit_logs (
     log_id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     clinic_id       INT NOT NULL,
@@ -438,6 +438,8 @@ CREATE TABLE clinical.audit_logs (
     description     VARCHAR(255) NOT NULL,
     metadata        JSONB,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),  -- cuándo
+    prev_hash       CHAR(64),                         -- huella SHA-256 del registro previo de la misma clínica (NULL en el primero)
+    row_hash        CHAR(64) NOT NULL,                -- huella SHA-256 de este registro encadenada con prev_hash
     FOREIGN KEY (clinic_id, user_id)    REFERENCES users (clinic_id, user_id),
     FOREIGN KEY (clinic_id, patient_id) REFERENCES patients (clinic_id, patient_id)
 );
@@ -663,6 +665,175 @@ CREATE TRIGGER trg_audit_logs_no_truncate
     FOR EACH STATEMENT EXECUTE FUNCTION audit_logs_append_only();
 
 
+-- Módulo §9 (auditoría verificable): cada entrada en audit_logs calcula su huella SHA-256
+-- a partir de sus columnas inmutables y de la huella del registro anterior de la misma clínica.
+-- La función de cálculo es compartida entre el trigger BEFORE INSERT y la función de verificación
+-- para garantizar que ambos serialicen exactamente los mismos campos en el mismo formato.
+CREATE FUNCTION clinical.audit_log_compute_hash(
+    p_prev_hash      CHAR(64),
+    p_log_id         BIGINT,
+    p_clinic_id      INT,
+    p_user_id        INT,
+    p_event_type_id  SMALLINT,
+    p_data_object_id SMALLINT,
+    p_object_id      BIGINT,
+    p_patient_id     INT,
+    p_description    VARCHAR,
+    p_metadata       JSONB,
+    p_created_at     TIMESTAMPTZ
+) RETURNS CHAR(64)
+LANGUAGE sql IMMUTABLE SET search_path = pg_catalog AS $$
+    SELECT encode(
+        sha256(
+            convert_to(
+                concat_ws(
+                    '|',
+                    coalesce(p_prev_hash, 'GENESIS'),
+                    p_log_id::text,
+                    p_clinic_id::text,
+                    p_user_id::text,
+                    p_event_type_id::text,
+                    p_data_object_id::text,
+                    p_object_id::text,
+                    p_patient_id::text,
+                    p_description,
+                    coalesce(p_metadata::text, ''),
+                    to_char(p_created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+                ),
+                'UTF8'
+            )
+        ),
+        'hex'
+    )::char(64);
+$$;
+
+-- Trigger BEFORE INSERT: serializa las inserciones de una misma clínica con un candado
+-- consultivo transaccional (pg_advisory_xact_lock) para evitar que dos transacciones
+-- concurrentes lean el mismo predecesor y bifurquen la cadena.
+-- SECURITY DEFINER: mc_reception y mc_professional tienen INSERT pero no SELECT sobre
+-- audit_logs; la función corre como mc_owner con search_path fijo para leer la huella previa.
+CREATE FUNCTION clinical.audit_logs_set_hash() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = admin, agenda, clinical, pg_temp AS $$
+DECLARE
+    v_prev_id   BIGINT;
+    v_prev_hash CHAR(64);
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('clinical.audit_logs'), NEW.clinic_id);
+
+    SELECT log_id, row_hash
+      INTO v_prev_id, v_prev_hash
+      FROM audit_logs
+     WHERE clinic_id = NEW.clinic_id
+     ORDER BY log_id DESC
+     LIMIT 1;
+
+    -- Si dos transacciones obtuvieron su nextval antes del candado en orden inverso al que
+    -- adquirieron el candado, se adelanta log_id para que el orden por log_id coincida siempre
+    -- con el orden real de encadenamiento.
+    IF v_prev_id IS NOT NULL AND NEW.log_id <= v_prev_id THEN
+        NEW.log_id := nextval(pg_get_serial_sequence('clinical.audit_logs', 'log_id'));
+    END IF;
+
+    NEW.prev_hash := v_prev_hash;
+    NEW.row_hash  := audit_log_compute_hash(
+        NEW.prev_hash,
+        NEW.log_id,
+        NEW.clinic_id,
+        NEW.user_id,
+        NEW.event_type_id,
+        NEW.data_object_id,
+        NEW.object_id,
+        NEW.patient_id,
+        NEW.description,
+        NEW.metadata,
+        NEW.created_at
+    );
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER trg_audit_logs_hash_chain
+    BEFORE INSERT ON audit_logs
+    FOR EACH ROW EXECUTE FUNCTION audit_logs_set_hash();
+
+-- Recorre la cadena de una clínica en orden de log_id y devuelve el resultado de la verificación,
+-- señalando el primer registro roto si alguien alteró una fila o borró un eslabón intermedio.
+CREATE FUNCTION clinical.verify_audit_chain(p_clinic_id INT)
+RETURNS TABLE (
+    is_valid            BOOLEAN,
+    checked_count       BIGINT,
+    last_log_id         BIGINT,
+    last_row_hash       CHAR(64),
+    first_broken_log_id BIGINT,
+    failure_reason      TEXT
+)
+LANGUAGE plpgsql STABLE SET search_path = admin, agenda, clinical, pg_temp AS $$
+DECLARE
+    v_row           audit_logs%ROWTYPE;
+    v_expected_prev CHAR(64) := NULL;
+    v_computed_hash CHAR(64);
+    v_count         BIGINT   := 0;
+    v_last_id       BIGINT   := NULL;
+    v_last_hash     CHAR(64) := NULL;
+BEGIN
+    FOR v_row IN
+        SELECT *
+          FROM audit_logs
+         WHERE clinic_id = p_clinic_id
+         ORDER BY log_id ASC
+    LOOP
+        v_count := v_count + 1;
+
+        IF v_row.prev_hash IS DISTINCT FROM v_expected_prev THEN
+            RETURN QUERY SELECT
+                false,
+                v_count,
+                v_row.log_id,
+                v_row.row_hash,
+                v_row.log_id,
+                'La huella previa (prev_hash) no coincide con la del registro anterior'::text;
+            RETURN;
+        END IF;
+
+        v_computed_hash := audit_log_compute_hash(
+            v_row.prev_hash,
+            v_row.log_id,
+            v_row.clinic_id,
+            v_row.user_id,
+            v_row.event_type_id,
+            v_row.data_object_id,
+            v_row.object_id,
+            v_row.patient_id,
+            v_row.description,
+            v_row.metadata,
+            v_row.created_at
+        );
+
+        IF v_row.row_hash IS DISTINCT FROM v_computed_hash THEN
+            RETURN QUERY SELECT
+                false,
+                v_count,
+                v_row.log_id,
+                v_row.row_hash,
+                v_row.log_id,
+                'La huella del registro (row_hash) no coincide con su contenido actual'::text;
+            RETURN;
+        END IF;
+
+        v_expected_prev := v_row.row_hash;
+        v_last_id       := v_row.log_id;
+        v_last_hash     := v_row.row_hash;
+    END LOOP;
+
+    RETURN QUERY SELECT
+        true,
+        v_count,
+        v_last_id,
+        v_last_hash,
+        NULL::bigint,
+        NULL::text;
+END $$;
+
+
 -- =============================================================================
 -- ÍNDICES
 -- Los de PK, UNIQUE y EXCLUDE los crea PostgreSQL. Cada uno se justificará con
@@ -691,5 +862,8 @@ CREATE INDEX ix_patient_contacts_patient   ON patient_contacts (patient_id);
 CREATE INDEX ix_audit_clinic_patient_date  ON audit_logs (clinic_id, patient_id, created_at);
 CREATE INDEX ix_audit_clinic_user_date     ON audit_logs (clinic_id, user_id, created_at);
 CREATE INDEX ix_audit_clinic_date          ON audit_logs (clinic_id, created_at);
+
+-- Módulo §9: último registro por clínica al encadenar y recorrido ordenado al verificar la cadena
+CREATE INDEX ix_audit_clinic_log           ON audit_logs (clinic_id, log_id);
 
 COMMIT;
