@@ -6,6 +6,8 @@ import { agendaRouter } from './routes/agenda.js';
 import { reportsRouter } from './routes/reports.js';
 import { appointmentsRouter } from './routes/appointments.js';
 import { availabilityRouter } from './routes/availability.js';
+import { blockadesRouter } from './routes/blockades.js';
+import { schedulesRouter } from './routes/schedules.js';
 
 // Servicio agenda: horarios, bloqueos, disponibilidad, citas y reportes (RF5–RF13, RF16, RF20,
 // RF21). Cada tema tiene su archivo en routes/; los demás llegan en el bloque B.
@@ -36,6 +38,8 @@ const protect = [authenticate, identify];
 app.use(['/schedules', '/blockades', '/availability', '/appointments', '/agenda', '/reports'], protect);
 
 // Cada router pide con requirePermission el permiso específico de cada ruta.
+app.use('/schedules', schedulesRouter);
+app.use('/blockades', blockadesRouter);
 app.use('/appointments', appointmentsRouter);
 app.use('/availability', availabilityRouter);
 app.use('/agenda', agendaRouter);      // RF20

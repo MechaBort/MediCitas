@@ -640,6 +640,34 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   copia aislada: con ella, siempre hay una sola reserva; sin ella, la API concedió las dos (`[201, 201]`) y, con diez
   clientes, las diez. La prueba falla si se quita lo que garantiza I1. La salida de `npm test` sirve así de base para el informe de pruebas que pide el enunciado.
 
+**Decisión de RF5 y RF6 (`feat/schedules-blockades`): horarios y bloqueos en hora local, detección de conflictos sin cancelación e invalidación tras el `COMMIT`.**
+- **Problema.** Los bloques de horario (`RF5`) y los bloqueos de agenda (`RF6`) se definen en la fecha y hora local
+  de cada clínica (`YYYY-MM-DD`, `HH:MM`), pero en la base viven como `tstzrange` de instantes absolutos. Además,
+  `RF6` exige que un bloqueo sobre citas ya reservadas no las cancele, sino que las marque como conflictos, y
+  cualquier cambio de horario o bloqueo debe invalidar las copias de disponibilidad de `RF7` (`I8`).
+- **Elegido.**
+  - Conversión en PostgreSQL usando `clinics.time_zone`: `tstzrange(($date + $startTime) AT TIME ZONE c.time_zone, ($date + $endTime) AT TIME ZONE c.time_zone)`.
+  - Autorización de dos niveles (`RF17`): `schedules.manage` permite al administrador de clínica gestionar cualquier
+    profesional de su clínica; `schedules.manage_own` restringe al profesional a su propio `req.user.userId` (403 si
+    intenta operar sobre otro profesional).
+  - En `RF5`, antes de insertar o actualizar se consulta si el rango se solapa (`&&`) con otro bloque del mismo
+    profesional para devolver 409 con mensaje explícito, manteniendo `ex_schedules_overlap` como garantía ante
+    concurrencia y `trg_professional_schedules_guard` (`MC006` → 409) para impedir que se recorte o borre un bloque
+    con citas reservadas (`I3`).
+  - En `RF6`, `POST /blockades` inserta el bloqueo y en la misma transacción consulta las citas reservadas
+    (`appointment_status_id = 1`) que se solapan (`a.period && b.period`), devolviéndolas en `conflicts` sin
+    cambiarles el estado; además se expone `GET /blockades/conflicts` para que recepción las consulte y reprograme.
+  - En todas las escrituras (`POST`, `PATCH`, `DELETE`), se invoca `bumpAgendaVersion` **después** de que termina
+    `withTransaction` (`COMMIT`), nunca dentro de la transacción.
+- **Alternativas descartadas.**
+  - Convertir zonas horarias en JavaScript: requeriría bibliotecas adicionales o manipulación manual de offsets,
+    mientras PostgreSQL ya conoce el catálogo IANA en `clinics.time_zone`.
+  - Cancelar automáticamente las citas dentro de un bloqueo: violaría `RF6`, que pide conservarlas y listarlas para
+    reprogramación.
+- **Lo que se sacrifica.** Una consulta adicional dentro de la transacción de `POST /blockades` para recuperar el
+  detalle de las citas en conflicto, a cambio de que quien registra el bloqueo reciba de inmediato la lista de citas
+  por reprogramar.
+
 ---
 
 ## 10. Orden de implementación

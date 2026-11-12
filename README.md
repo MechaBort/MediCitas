@@ -1000,6 +1000,60 @@ servicios activos de la clínica cuya especialidad tenga el profesional) y `phon
 | 404 | El profesional, alguna especialidad o algún servicio no existe o pertenece a otra clínica (I5) |
 | 502 | El cambio de `isActive` se guardó en la base pero no en Keycloak; repetir la petición corrige la diferencia |
 
+### Horarios de atención: `/schedules` (RF5)
+Permisos de escritura: `schedules.manage` (administrador de clínica: cualquier profesional de su clínica) o `schedules.manage_own` (profesional: únicamente su propio `userId`). Lectura: administrador de clínica, profesional y recepción.
+
+Cada bloque se recibe en la fecha (`YYYY-MM-DD`) y hora (`HH:MM`, 24 h) locales de la clínica y se convierte a instantes absolutos con `clinics.time_zone`. Puede haber varios bloques en el mismo día (jornada partida), pero no pueden solaparse entre sí (`ex_schedules_overlap`).
+
+#### `GET /schedules?professionalId=…&from=…&to=…` (RF5)
+Lista los bloques de horario de la clínica del token, con filtros opcionales por profesional y rango de fechas (`YYYY-MM-DD`). Cada bloque: `{scheduleId, professionalId, date, startTime, endTime, start, end, createdAt, updatedAt}`.
+
+#### `POST /schedules` (RF5)
+```json
+{
+  "professionalId": 6,
+  "date": "2026-11-20",
+  "startTime": "08:00",
+  "endTime": "12:00"
+}
+```
+
+#### `PATCH /schedules/{scheduleId}` y `DELETE /schedules/{scheduleId}` (RF5, I3)
+`PATCH` recibe uno o más de `{date, startTime, endTime}`. Si al recortar o eliminar un bloque quedarían citas reservadas fuera del horario del profesional, el trigger `trg_professional_schedules_guard` rechaza la operación con `MC006` (409). Tras cada `COMMIT` se incrementa la versión de agenda en Redis (`I8`).
+
+| Código | Caso |
+|---|---|
+| 200 / 201 / 204 | Bloque listado, actualizado, creado o eliminado |
+| 400 | Body o parámetros inválidos, o `startTime >= endTime` |
+| 403 | Sin permiso, o un profesional con `schedules.manage_own` intenta gestionar el horario de otro profesional |
+| 404 | El profesional o el bloque no existe o pertenece a otra clínica (I5) |
+| 409 | El bloque se solapa con otro del mismo profesional (`ex_schedules_overlap`), o tiene citas reservadas que quedarían fuera del horario (`MC006`, I3) |
+
+### Bloqueos de agenda: `/blockades` (RF6)
+Mismos permisos que `/schedules`. Un bloqueo retira disponibilidad (RF7) e impide nuevas reservas en ese periodo (I3), pero **no cancela** las citas ya reservadas que caen dentro: esas citas quedan en estado `reservada` y se devuelven en `conflicts` para que recepción las reprograme (RF6, RF10).
+
+#### `GET /blockades?professionalId=…&from=…&to=…` y `GET /blockades/conflicts?professionalId=…&blockadeId=…` (RF6)
+`GET /blockades` lista los bloqueos de la clínica junto con sus citas reservadas en conflicto (`conflicts`). `GET /blockades/conflicts` devuelve directamente las citas reservadas que se cruzan con algún bloqueo vigente.
+
+#### `POST /blockades` y `DELETE /blockades/{blockadeId}` (RF6)
+Acepta `date` (bloqueo dentro de un mismo día) o el par `startDate` y `endDate` (ausencias de varios días):
+```json
+{
+  "professionalId": 6,
+  "date": "2026-11-20",
+  "startTime": "09:00",
+  "endTime": "11:00",
+  "reason": "Capacitación extraordinaria"
+}
+```
+
+| Código | Caso |
+|---|---|
+| 200 / 201 / 204 | Lista de bloqueos/conflictos, bloqueo creado (con `conflicts: [...]`) o bloqueo eliminado |
+| 400 | Body o parámetros inválidos, o el fin del bloqueo no es posterior al inicio |
+| 403 | Sin permiso, o un profesional con `schedules.manage_own` intenta gestionar bloqueos de otro profesional |
+| 404 | El profesional o el bloqueo no existe o pertenece a otra clínica (I5) |
+
 ### `POST /appointments` (RF9)
 Permiso `appointments.manage` (administrador de clínica y recepción). Reserva una cita en la clínica del token.
 ```json
