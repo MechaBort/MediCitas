@@ -258,3 +258,58 @@ appointmentsRouter.post('/:id/reschedule', requirePermission('appointments.manag
     rescheduledFromId: originalId,
   });
 });
+
+// --- Historial de citas de un paciente (RF16) ---------------------------------------------------------------
+//
+// Usa el índice ix_appointments_patient_start (patient_id, lower(period)). No lee patient_contacts (dato
+// sensible auditable en clinical, RF18): solo verifica que el paciente pertenezca a la clínica del token y
+// devuelve sus citas en todos los estados con su profesional y su servicio.
+
+const historyQuerySchema = z.object({
+  patientId: z.coerce.number().int().positive().max(2147483647),
+}).strict();
+
+const PATIENT_HISTORY_SQL = `
+  SELECT a.appointment_id,
+         a.patient_id,
+         a.professional_id,
+         u.name || ' ' || u.last_name AS professional_name,
+         a.service_id,
+         s.service_name,
+         a.appointment_status_id,
+         lower(a.period) AS start_at,
+         upper(a.period) AS end_at,
+         a.appointment_description,
+         a.cancel_reason,
+         a.cancelled_by,
+         a.cancelled_at,
+         a.rescheduled_from_id
+    FROM appointments a
+    JOIN users u    ON u.clinic_id = a.clinic_id AND u.user_id = a.professional_id
+    JOIN services s ON s.clinic_id = a.clinic_id AND s.service_id = a.service_id
+   WHERE a.clinic_id = $1 AND a.patient_id = $2
+   ORDER BY lower(a.period), a.appointment_id`;
+
+// RF16: historial de citas de un paciente dentro de su clínica, con el estado de cada una.
+appointmentsRouter.get('/', requirePermission('patient_history.read'), async (req, res) => {
+  const { patientId } = parse(historyQuerySchema, req.query);
+  const { clinicId, dbRole } = req.user;
+
+  const rows = await withTransaction(dbRole, async (client) => {
+    const { rows: [patient] } = await client.query(
+      'SELECT 1 FROM patients WHERE clinic_id = $1 AND patient_id = $2',
+      [clinicId, patientId],
+    );
+    if (!patient) throw new HttpError(404, 'Paciente no encontrado');
+
+    return (await client.query(PATIENT_HISTORY_SQL, [clinicId, patientId])).rows;
+  });
+
+  res.json(rows.map((row) => ({
+    ...toAppointment(row),
+    professionalName: row.professional_name,
+    serviceName: row.service_name,
+    rescheduledFromId: row.rescheduled_from_id === null ? null : Number(row.rescheduled_from_id),
+  })));
+});
+

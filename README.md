@@ -1188,6 +1188,44 @@ espacios en el rango no aparece.
 | 400 | Parámetros inválidos (falta uno, fecha imposible como `2030-02-30`, id que no es un número, un parámetro que no se admite como `clinicId`), el profesional no atiende ese servicio (RF7), o en RF8 un rango al revés o de más de 31 días |
 | 404 | El profesional o el servicio no existe, está dado de baja o es de otra clínica (I5) |
 
+### Historial de citas de un paciente: `GET /appointments?patientId=…` (RF16)
+Permiso `patient_history.read` (administrador de clínica, recepción y profesional). Devuelve todas las citas del paciente en la clínica del token, en orden cronológico y en cualquiera de los cinco estados (`reservada`, `atendida`, `ausente`, `cancelada`, `reprogramada`), incluyendo `professionalName`, `serviceName`, `cancelReason` y `rescheduledFromId`. No lee `patient_contacts` (dato sensible auditable en `clinical`, RF18).
+
+| Código | Caso |
+|---|---|
+| 200 | Lista de citas del paciente (vacía si aún no tiene citas) |
+| 400 | Falta `patientId`, no es un número válido o se envía un parámetro no permitido (`clinicId`) |
+| 404 | El paciente no existe o pertenece a otra clínica (I5) |
+
+### Pacientes: `/patients` (RF14, RF18)
+Lectura (`GET /patients`, `GET /patients/genders`, `GET /patients/{patientId}`): permiso `patients.read` (administrador de clínica, recepción y profesional). Escritura (`POST /patients`, `PATCH /patients/{patientId}`): permiso `patients.write` (administrador de clínica y recepción).
+
+- `GET /patients` devuelve el directorio de pacientes de la clínica sin sus datos de contacto (`{patientId, identification, name, lastName, birthDate, genderId, gender, isActive, createdAt, updatedAt}`), para no generar lecturas masivas de datos sensibles en la bitácora.
+- `GET /patients/{patientId}` devuelve el paciente junto con sus contactos activos (`contacts: [{contactId, type, value}]`) y registra en `clinical.audit_logs` un evento `read` por cada contacto leído dentro de la misma transacción (RF18).
+- `POST /patients` crea el paciente y sus contactos (`telefono` o `email`), registrando en `audit_logs` un evento `create` por cada contacto creado:
+```json
+{
+  "identification": "1-1234-5678",
+  "name": "María",
+  "lastName": "Vargas Mora",
+  "birthDate": "1992-05-14",
+  "gender": "femenino",
+  "contacts": [
+    { "type": "telefono", "value": "+506 8888 1234" },
+    { "type": "email", "value": "maria.vargas@example.com" }
+  ]
+}
+```
+- `PATCH /patients/{patientId}` actualiza los datos personales, el estado (`isActive`) y/o la lista de contactos (`contacts`). Los contactos que se retiran reciben baja lógica (`is_active = false`, evento `delete` en `audit_logs`) y los nuevos se insertan (evento `create` en `audit_logs`).
+
+| Código | Caso |
+|---|---|
+| 200 / 201 | Paciente(s) consultado(s), creado o actualizado |
+| 400 | Body inválido, `birthDate` en el futuro o contactos duplicados en la solicitud |
+| 403 | Rol sin permiso (`professional` al intentar crear o editar pacientes) |
+| 404 | El paciente no existe o pertenece a otra clínica (I5) |
+| 409 | Ya existe un paciente con esa `identification` en la misma clínica (`uq_patients_clinic_identification`) |
+
 ### `GET /agenda?date=…` (RF20)
 Permiso `agenda.read` (administrador de clínica, recepción y profesional). La agenda del día: las citas que empiezan
 ese día en la hora local de la clínica, **en todos los estados** (también canceladas y reprogramadas), ordenadas por
