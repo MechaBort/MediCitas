@@ -3,6 +3,7 @@ import { pool } from '@medicitas/common/db';
 import { authenticate, identify } from '@medicitas/common/auth';
 import { toResponse } from '@medicitas/common/errors';
 import { auditRouter } from './routes/audit.js';
+import { clinicalNotesRouter } from './routes/clinical-notes.js';
 import { patientsRouter } from './routes/patients.js';
 
 // Servicio clinical: pacientes, notas clínicas y bitácora de auditoría (RF14, RF15, RF18, RF19).
@@ -32,6 +33,7 @@ app.get('/health', async (req, res) => {
 const protect = [authenticate, identify];
 app.use(['/patients', '/clinical-notes', '/audit'], protect);
 app.use('/audit', auditRouter);
+app.use('/clinical-notes', clinicalNotesRouter);
 app.use('/patients', patientsRouter);
 
 app.use((req, res) => {

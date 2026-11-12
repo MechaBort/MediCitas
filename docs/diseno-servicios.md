@@ -691,6 +691,35 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
 - **Lo que se sacrifica.** Obtener los contactos de un paciente requiere pedir `GET /patients/:patientId` en lugar de
   tomarlos del listado general.
 
+**Decisión de RF15 y RF18 (`feat/clinical-notes`): la nota clínica solo es del profesional que atendió, y cada
+acceso queda en la bitácora.**
+- **Problema.** La nota clínica es el dato más sensible del sistema. Según la matriz, solo el profesional la escribe
+  y la lee, y únicamente la de **sus** citas. RF15 agrega que la cita tiene que estar atendida, y RF18 pide registrar
+  toda lectura y escritura. La base ya tiene la tabla con `UNIQUE (appointment_id)`, una nota por cita, y le da
+  `SELECT, INSERT, UPDATE` solo a `mc_professional`. Pero no sabe qué profesional atendió cada cita.
+- **Elegido.**
+  - **Rutas:** `POST /clinical-notes`, `GET /clinical-notes/{id}`, `GET /clinical-notes?appointmentId=…` y
+    `PATCH /clinical-notes/{id}`, en `services/clinical/src/routes/clinical-notes.js`, con
+    `clinical_notes.write_own`.
+  - **"Propia y atendida" se revisa en la API, dentro de la transacción.** Al escribir, `loadOwnAttendedAppointment`
+    exige que la cita sea de la clínica y del profesional del token (404 si no lo es) y que esté atendida (409 si
+    no). Al leer y al corregir, el `WHERE` filtra por el profesional de la cita.
+  - **No hace falta un trigger,** porque ninguna transacción concurrente puede volver falsa la revisión: "atendida"
+    es un estado final (`MC002` impide cambiarlo) y el profesional de una cita no cambia nunca (`MC004`).
+  - **La nota se puede corregir** con `PATCH`. Solo el autor puede hacerlo, y cada corrección queda en la bitácora.
+    Lo decidió Sebastián: en la práctica clínica las notas se corrigen, y los GRANT ya daban `UPDATE`.
+  - **Bitácora:** `logAuditEvent` (`services/clinical/src/audit.js`), con `create`, `read` o `update`, en la misma
+    transacción. La descripción dice qué se hizo, nunca qué dice la nota: el administrador lee la bitácora (RF19),
+    pero no puede leer notas.
+- **Alternativas descartadas.**
+  - **Un trigger que valide "propia y atendida".** Repetiría en la base una regla que ya no puede romperse por
+    concurrencia, y el trigger no conoce al usuario del token: habría que pasárselo como variable de sesión.
+  - **Responder 403 a otro profesional.** Revelaría que la cita o la nota existen. El 404 es igual al de una que no
+    existe (I5).
+  - **Notas inmutables.** Es más estricto, pero obliga a pedir una corrección por fuera del sistema.
+- **Lo que se sacrifica.** Cada lectura de una nota escribe una fila en la bitácora y toma el candado de la cadena de
+  huellas de su clínica (§11). Es el mismo costo, ya medido, que las lecturas de contactos.
+
 **Decisión de las pruebas de fuga (`test/tenant-isolation`, I5): probar las tres capas de aislamiento multi-tenant.**
 - **Problema.** Con columna discriminadora (`clinic_id`), el aislamiento entre clínicas (`I5`) se apoya en tres capas:
   (1) `clinicId` sale siempre del token y se rechaza en parámetros/body; (2) toda ruta filtra por `req.user.clinicId`
