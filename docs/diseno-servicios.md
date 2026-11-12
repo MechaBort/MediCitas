@@ -720,6 +720,29 @@ acceso queda en la bitácora.**
 - **Lo que se sacrifica.** Cada lectura de una nota escribe una fila en la bitácora y toma el candado de la cadena de
   huellas de su clínica (§11). Es el mismo costo, ya medido, que las lecturas de contactos.
 
+**Decisión de RF19 (`feat/audit-query`): la bitácora se consulta paginada por `log_id`, con fechas en la hora de
+la clínica.**
+- **Problema.** RF19 pide consultar la bitácora con filtros por usuario, paciente y rango de fechas. Pero la
+  bitácora crece con **cada lectura** de un dato sensible (RF18), así que una clínica activa acumula miles de filas
+  por día: no se puede devolver entera.
+- **Elegido.**
+  - **La ruta.** `GET /audit`, en `services/clinical/src/routes/audit.js`, junto a `GET /audit/verify` del §9, con
+    el mismo permiso `audit.read`.
+  - **Filtros opcionales:** `userId`, `patientId`, `from` y `to`.
+  - **Fechas.** Son días `YYYY-MM-DD` en la hora local de la clínica, inclusive, igual que en RF21, para que las dos
+    rutas con rango se comporten igual.
+  - **Paginación por cursor.** Se ordena por `log_id` descendente, y la página siguiente es `log_id < beforeId`. Es
+    el orden de la cadena de huellas, y la consulta recorre el índice `ix_audit_clinic_log`.
+  - **Respuesta:** `{ entries, nextBeforeId }`.
+- **Alternativas descartadas.**
+  - **Paginar con `offset`.** Cada página obliga a la base a recorrer y descartar todas las anteriores. Además, si
+    llegan entradas nuevas mientras se pagina, la página siguiente repite o se salta filas.
+  - **Ordenar por `created_at`.** `now()` es la hora de **inicio** de cada transacción, así que dos transacciones
+    simultáneas pueden quedar con un orden de `created_at` distinto al de `log_id`, que es el orden real de la cadena.
+  - **Fechas con hora y zona** (`2026-11-12T00:00:00-06:00`). Son más precisas, pero el administrador piensa en días
+    de su clínica, y RF21 ya usa días.
+- **Lo que se sacrifica.** No se puede saltar directo a "la página 5": solo se avanza de una página a la siguiente.
+
 **Decisión de las pruebas de fuga (`test/tenant-isolation`, I5): probar las tres capas de aislamiento multi-tenant.**
 - **Problema.** Con columna discriminadora (`clinic_id`), el aislamiento entre clínicas (`I5`) se apoya en tres capas:
   (1) `clinicId` sale siempre del token y se rechaza en parámetros/body; (2) toda ruta filtra por `req.user.clinicId`
