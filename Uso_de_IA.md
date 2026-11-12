@@ -10,12 +10,13 @@ Docker y a minikube.
 ## 1. Cómo se usó
 
 - **La IA propone y el grupo decide.** Antes de implementar, la IA proponía un plan por etapas, y en cada decisión
-  explicaba el problema, la opción elegida, las alternativas descartadas y lo que se sacrifica. Esas explicaciones
+  explicaba el problema, la opción elegida, las alternativas descartadas y lo que se sacrifica. No empezaba a
+  programar hasta que el integrante aprobaba el plan, lo cambiaba o pedía más explicación. Esas explicaciones
   quedaron en `docs/diseno-servicios.md` y `docs/comparacion-arquitecturas.md`. Varias propuestas se rechazaron o se
   cambiaron (sección 3).
 - **Por etapas, con parada y revisión.** Al terminar cada etapa, la IA se detenía y entregaba un reporte con los
-  archivos cambiados, el diff y las decisiones. La IA nunca hizo commits, push, PR ni merges: los hizo cada
-  integrante, como muestra el historial de Git.
+  archivos cambiados, el diff y las decisiones. En el trabajo de Sebastián y de Emmanuel, la IA nunca hizo commits,
+  push, PR ni merges: los hizo el integrante después de revisar los cambios.
 - **Código escrito por el integrante.** En algunas partes, la IA dejó preparada la estructura y el integrante
   escribió la lógica; después la IA la revisó (ejemplos en la sección 3).
 - **Para entender lo generado.** Se construyó `docs/guia-de-estudio.md`: explica cada parte desde lo básico, con
@@ -23,7 +24,8 @@ Docker y a minikube.
   defender todo el sistema.
 - **Verificación aislada.** Todo cambio se probó en una copia aparte de la pila (otro proyecto de Docker, con otros
   puertos), sin tocar la pila local de nadie.
-- **Trello.** La IA revisaba el tablero y proponía qué mover, y solo escribía en él con la aprobación de Sebastián.
+- **Trello.** La IA revisaba el tablero y proponía qué mover, y solo escribía en él con la aprobación explícita del
+  integrante.
 
 ## 2. En qué partes
 
@@ -60,9 +62,37 @@ Docker y a minikube.
 
 ### Emmanuel Blanco
 
-> **Pendiente:** Emmanuel completa esta sección con su uso de IA en sus commits: la traducción de `MC001`–`MC006`,
-> el gateway, el arnés de pruebas, RF9 con la prueba de carrera, RF10, RF11–RF13, RF7 y RF8, la caché con su
-> medición, y RF20 y RF21.
+Sus cambios del 2026-11-09 al 2026-11-12: las etapas 4, 5 y 6 de la hoja de ruta (los cimientos) y el carril del
+servicio `agenda` (RF7 a RF13, RF20, RF21 y la caché de Redis). Claude escribió el código, las pruebas y la
+documentación de cada etapa, y Emmanuel lo revisó y lo integró.
+
+| Etapa | Commit | Lo que escribió Claude |
+|---|---|---|
+| 4. Errores de la base | `a0f9fda` | En `errors.js`, la distinción de los `23P01` según la restricción violada. La tabla `MC001`–`MC006` es de Emmanuel |
+| 5. Servicios y gateway | `c29b855` | Los servicios `agenda` y `clinical` (Dockerfile, `app.js`, `server.js`), el gateway Nginx (`gateway/nginx.conf`) y sus entradas en `docker-compose.yml` |
+| 6. Arnés de pruebas | `88896c4` | El comando `npm test` con `node:test`, el contenedor de pruebas y las primeras 46 pruebas (15 unitarias y 31 de integración) |
+| RF9: reservar | `b4963c1` | `POST /appointments`, la prueba de carrera (dos y diez clientes por el último espacio) y la versión de agenda en Redis (`agenda-version.js`) |
+| RF11–RF13: cancelar y desenlace | `31a051d` | `POST /appointments/{id}/cancel` y `/outcome`, con sus pruebas de transiciones de estado |
+| RF10: reprogramar | `4512d0d` | `POST /appointments/{id}/reschedule` en una sola transacción, con 10 pruebas, entre ellas una carrera y un deadlock provocado a propósito |
+| RF7, RF8: disponibilidad | `8d14f59` | El cálculo de huecos libres en SQL con rangos múltiples, el corte en espacios, las dos rutas, 18 pruebas y el script de carga con k6 |
+| Caché de RF7 | `1bddcf9` | La lectura y escritura de copias en Redis (`availability-cache.js`, `redis.js`), 4 pruebas de la caché y la medición antes y después |
+| RF20, RF21: agenda y conteo | `0d47dd6` | `GET /agenda` y `GET /reports/appointments-by-status`, con 9 pruebas |
+
+En todas las etapas, Claude además:
+- documentó el contrato de cada ruta en el README, el porqué de cada decisión en `docs/diseno-servicios.md` y
+  `docs/comparacion-arquitecturas.md`, y la guía de estudio;
+- verificó cada etapa en una copia aislada de la pila y confirmó con `EXPLAIN ANALYZE` que las consultas usan sus
+  índices;
+- midió la carga de la consulta de disponibilidad con k6, antes y después de la caché;
+- mantuvo el contexto del proyecto en un archivo para los asistentes (`AGENTS.md`), fuera del repositorio entregado.
+
+**Lo que no hizo la IA:** commits, push ni fusiones (los hizo Emmanuel); la decisión final de ninguna etapa (cada plan
+se aprobó antes de implementarlo); mover tarjetas del Trello sin aprobación; ni la tabla de traducción de errores de
+la etapa 4.
+
+**Responsabilidad.** Emmanuel revisó cada etapa antes de su commit y asume la responsabilidad de lo entregado. Pidió
+explicaciones en prosa de las decisiones que no le quedaban claras antes de aprobarlas, por ejemplo el vencimiento de
+la caché y los topes de días de RF8 y RF21.
 
 ## 3. Decisiones del grupo
 
@@ -72,9 +102,9 @@ que la propuesta no cubría.
 **Sebastián:**
 - **La arquitectura.** Pidió separar el sistema en servicios con un schema por servicio, para poder escalar el
   servicio de más demanda (la agenda) sin escalar todo. Cuando la IA empezó a mover tablas a schemas, la detuvo y
-  pidió comparar primero las arquitecturas (microservicios contra basada en servicios). Eligió la base única con un
-  schema por servicio, y propuso usar réplicas de lectura en Kubernetes, de donde salió el plan de CloudNativePG por
-  pasos. También cuestionó si el servicio de citas no quedaba demasiado grande.
+  pidió comparar primero las arquitecturas (microservicios contra basada en servicios). Se inclinó por la base única
+  con un schema por servicio, que el equipo aprobó, y propuso usar réplicas de lectura en Kubernetes, de donde salió
+  el plan de CloudNativePG por pasos. También cuestionó si el servicio de citas no quedaba demasiado grande.
 - **La reserva es síncrona y transaccional.** Ante la opción de resolver reservas de forma asíncrona, la rechazó:
   "prefiero que una reserva se tenga que hacer dos veces" antes que confirmar una cita que después resulte inválida.
 - **Una cita reservada no cambia de duración ni de horario.** Argumentó que un administrador que cambia la duración
@@ -95,7 +125,32 @@ que la propuesta no cubría.
 - **Revisión del diseño de la base.** Pidió justificar restricciones como `uq_users_user_role` con ejemplos, y a raíz
   de esa revisión se quitó un `ON UPDATE CASCADE`.
 
-**El grupo:** eligió el módulo del §9 (auditoría verificable) el 2026-11-10, y se repartió el trabajo ese mismo día.
+**Emmanuel, en su carril:**
+- **La traducción de errores de la base (etapa 4).** Escribió él mismo la tabla que traduce `MC001`–`MC006` a códigos
+  HTTP. Claude explicó cada código y su criterio, sin escribirla.
+- **Los cambios de estado (RF11–RF13).** Aprobó rutas de acción separadas (`/cancel` y `/outcome`), cada una con su
+  permiso, en lugar de un `PATCH` genérico del estado.
+- **Reprogramar (RF10).** Aprobó que la reprogramación reutilice las revisiones de la reserva y permita cambiar de
+  profesional.
+- **La disponibilidad (RF7, RF8).** La idea de que la consulta parta de los horarios, para que los días sin horario no
+  cuesten nada, es suya. Aprobó el tope de 31 días de RF8 después de discutir por qué hacía falta.
+- **La caché de RF7.** Aprobó, después de pedir que se le explicaran una por una: que la validación del profesional y
+  el servicio siga consultando la base en cada petición; el vencimiento de 60 segundos; el header
+  `X-MediCitas-Cache`, para que las pruebas vean de dónde sale cada respuesta; la conexión a Redis en su propio
+  archivo; y medir con una y con tres copias del servicio. También decidió hacer la caché en su propia rama.
+- **La agenda del día y los reportes (RF20, RF21).** Aprobó rutas propias (`/agenda` y `/reports`), mostrar las citas
+  en todos los estados, y el tope de 366 días del conteo, después de cuestionar si no sería lento frente a los 31 días
+  de RF8. También aprobó que el profesional viera la agenda de toda la clínica, como permitía la matriz; el
+  2026-11-12 el grupo cambió esa regla para que solo vea la suya, como dice el §2 del enunciado.
+- **Una regla de trabajo propia:** antes de mover o borrar código que ya estaba en `main`, la IA debía explicar por qué.
+
+**El grupo:**
+- aprobó el 2026-11-08 la arquitectura (tres servicios con una base dividida en un schema por servicio, frente a los
+  microservicios con bases separadas) y la caché con invalidación por versión después del COMMIT y `volatile-lru`;
+- definió la hoja de ruta por etapas y el reparto del trabajo, y eligió el módulo del §9 (auditoría verificable) el
+  2026-11-10;
+- fijó las reglas de trabajo con la IA: pasos pequeños y explicables, cada decisión explicada, nada se implementa sin
+  aprobar el plan, y los commits los hace el integrante.
 
 ## 4. Qué se verificó de forma manual
 
@@ -106,8 +161,15 @@ revisando la salida:
 - **La identidad y el aislamiento:** con `curl`, sin token (401), con un rol sin permiso (403) y pidiendo recursos de
   otra clínica (404).
 - **La carrera:** dos `INSERT` simultáneos sobre el mismo espacio dejan una sola cita reservada.
-- **Que la prueba de carrera discrimina:** sin la restricción `EXCLUDE`, los diez clientes simultáneos obtenían su
-  reserva, y la prueba fallaba.
+- **Que las pruebas importantes detectan el error** (Emmanuel, en su carril). En cada caso se introdujo el fallo a
+  propósito en una copia aislada:
+  - sin la restricción que impide citas solapadas, la prueba de carrera concedió dos reservas del mismo espacio (y,
+    con diez clientes, las diez) y falló;
+  - sin el reintento ante un deadlock, la prueba de reprogramaciones cruzadas recibió un 500 y falló;
+  - contando también las citas canceladas, fallaron las pruebas de "cancelar libera el espacio" (I7);
+  - sin subir la versión de la agenda en Redis, fallaron las cinco pruebas de invalidación de la caché (I8).
+- **La medición de carga es reproducible:** el script está en `tests/load/availability.js` y los resultados, en el
+  README (de ~716 consultas por segundo con una copia y sin caché a ~2 415 con tres copias y caché).
 - **La bitácora:** la base rechaza `UPDATE`, `DELETE` y `TRUNCATE`, incluso al dueño de las tablas (I6).
 - **Los experimentos de la guía de estudio,** sobre la base, comprobando que no dejan cambios.
 - **Las mediciones:** la caché antes y después, con k6; el costo del candado del §9; y en Kubernetes, el HPA
