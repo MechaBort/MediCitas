@@ -586,6 +586,29 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   copia aislada: con ella, siempre hay una sola reserva; sin ella, la API concedió las dos (`[201, 201]`) y, con diez
   clientes, las diez. La prueba falla si se quita lo que garantiza I1. La salida de `npm test` sirve así de base para el informe de pruebas que pide el enunciado.
 
+**Decisión de RF14, RF16 y RF18 (`feat/patients-history`): contactos auditados en el detalle del paciente, baja lógica de contactos e historial sin contactos en `agenda`.**
+- **Problema.** `RF14` gestiona pacientes y sus datos de contacto en `services/clinical`, y `RF18` exige registrar en
+  `clinical.audit_logs` toda lectura y toda escritura de datos de contacto de pacientes. Además, `mc_clinic_admin` y
+  `mc_reception` tienen `SELECT, INSERT, UPDATE` sobre `patient_contacts` pero no `DELETE`, y `RF16` (`GET /appointments?patientId=…` en `services/agenda`) no debe leer contactos porque `agenda` no escribe en `clinical.audit_logs`.
+- **Elegido.**
+  - Separar el directorio (`GET /patients`, sin `patient_contacts`) del detalle (`GET /patients/:patientId`, con
+    `contacts`): consultar el listado general no lee contactos ni inunda la bitácora, mientras que abrir el detalle de
+    un paciente lee sus contactos activos y registra un evento `read` (`event_type_id = 1`, `data_object_id = 2`) por
+    cada contacto dentro de la misma transacción (`services/clinical/src/audit.js`).
+  - Al actualizar `contacts` en `PATCH /patients/:patientId`, los contactos retirados se marcan con `is_active = false`
+    (baja lógica, coherente con los `GRANT` de `02-grants.sql`) y se auditan con `event_type_id = 4` (`delete`),
+    conservando la fila a la que apuntan las entradas previas de `audit_logs`.
+  - En `RF16` (`GET /appointments?patientId=…`), `agenda` verifica que el paciente pertenezca a `req.user.clinicId`
+    consultando solo `patients` (sin tocar `patient_contacts`) y devuelve todas sus citas ordenadas por `lower(period)`
+    aprovechando el índice `ix_appointments_patient_start`.
+- **Alternativas descartadas.**
+  - Incluir `contacts` en `GET /patients`: una sola consulta al directorio de una clínica de 80 pacientes generaría
+    más de cien inserciones en `audit_logs` aunque el usuario solo buscara el nombre de un paciente.
+  - Hacer `DELETE` físico en `patient_contacts`: fallaría con `42501` por menor privilegio y dejaría huérfano el
+    `object_id` de la bitácora.
+- **Lo que se sacrifica.** Obtener los contactos de un paciente requiere pedir `GET /patients/:patientId` en lugar de
+  tomarlos del listado general.
+
 ---
 
 ## 10. Orden de implementación
