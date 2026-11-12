@@ -1524,6 +1524,45 @@ en ~4 ms.
 | 403 | El rol no tiene `reports.read` (recepción, profesional) |
 | 404 | El profesional no existe o es de otra clínica (I5) |
 
+### Consulta de la bitácora de auditoría: `GET /audit` (RF19)
+Permiso `audit.read`, que solo tiene el administrador de la clínica. Devuelve la bitácora de su clínica, de la entrada
+más nueva a la más antigua, paginada. Todos los filtros son opcionales y se pueden combinar:
+
+- `userId`: lo que hizo un usuario;
+- `patientId`: lo que se hizo sobre un paciente;
+- `from` y `to`: días `YYYY-MM-DD` en la hora local de la clínica, inclusive, igual que en RF21;
+- `limit`: el tamaño de la página;
+- `beforeId`: la página siguiente. Se pasa el `nextBeforeId` de la respuesta anterior.
+
+```json
+{
+  "entries": [
+    {
+      "logId": 5120,
+      "createdAt": "2026-11-12T17:40:11.512Z",
+      "userId": 3,
+      "userName": "Ana Rojas",
+      "event": "read",
+      "dataObject": "patient_contact",
+      "objectId": 42,
+      "patientId": 7,
+      "description": "Lectura de contacto (telefono) del paciente",
+      "metadata": { "type": "telefono" }
+    }
+  ],
+  "nextBeforeId": 5120
+}
+```
+
+Si `nextBeforeId` es `null`, no hay más páginas. Un filtro que apunta a un usuario o paciente de otra clínica devuelve
+una lista vacía, porque todo se filtra por la clínica del token (I5).
+
+| Código | Caso |
+|---|---|
+| 200 | La página, aunque esté vacía |
+| 400 | Parámetros inválidos: fecha imposible, `from` posterior a `to`, `limit` fuera de rango, ids no numéricos o un parámetro que no se admite, como `clinicId` |
+| 401 / 403 | Sin token, o el rol no es el administrador de la clínica |
+
 ### Verificación de la bitácora de auditoría (Módulo §9, I6)
 
 #### `GET /audit/verify`

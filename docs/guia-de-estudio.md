@@ -1997,7 +1997,7 @@ por petición.
 | RF16 | Historial del paciente | ✔ índice | ✔ `GET /appointments?patientId=…` (servicio `agenda`), con pruebas |
 | RF17 | Autenticación y matriz de permisos | ✔ realm, roles, matriz | ✔ `authenticate`, `identify`, `requirePermission` |
 | RF18 | Bitácora de accesos | ◐ tabla protegida; registrar cada acceso lo hace la API | ✔ contactos (`/patients/{id}`) y notas (`/clinical-notes`), en la misma transacción que el acceso, con pruebas |
-| RF19 | Consultar la bitácora con filtros | ✔ índices | ✘ |
+| RF19 | Consultar la bitácora con filtros | ✔ índices | ✔ `GET /audit` (servicio `clinical`), con filtros por usuario, paciente y fechas, paginada, con pruebas |
 | RF20 | Agenda del día | ✔ índices `ix_appointments_clinic_start` e `ix_appointments_prof_start` | ✔ `GET /agenda?date=…` (servicio `agenda`), con pruebas |
 | RF21 | Conteo por estado | ✔ consulta (E23) | ✔ `GET /reports/appointments-by-status`, hasta 366 días, con pruebas |
 
