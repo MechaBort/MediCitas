@@ -496,7 +496,7 @@ que el usuario del token sea su profesional antes de insertar.
 - name : VARCHAR(50) UNIQUE
 - description : VARCHAR(100)
 
-## auditLogs [tenant] (RF18 / RF19 — append-only protegida en el motor, I6)
+## auditLogs [tenant] (RF18 / RF19 / §9 — append-only protegida en el motor, I6, y con cadena de huellas SHA-256)
 - logId : BIGINT GENERATED ALWAYS AS IDENTITY (PK)
 - clinicId : INT (FK compuesta)
 - userId : INT (FK compuesta) - quién
@@ -507,11 +507,15 @@ que el usuario del token sea su profesional antes de insertar.
 - description : VARCHAR(255)
 - metadata : JSONB NULL
 - createdAt : TIMESTAMPTZ DEFAULT now() - cuándo
+- prevHash : CHAR(64) NULL - huella SHA-256 del registro anterior de la misma clínica (`NULL` en el primero)
+- rowHash : CHAR(64) - huella SHA-256 del contenido del registro encadenada con `prevHash`
 - FK (clinicId, userId) → Users(clinicId, userId)
 - FK (clinicId, patientId) → Patients(clinicId, patientId)
 
-Protección: ningún rol de la aplicación tiene `UPDATE`, `DELETE` ni `TRUNCATE` sobre esta tabla, y un trigger
-`BEFORE UPDATE OR DELETE` lanza una excepción aunque alguien conceda el permiso por error.
+Protección: ningún rol de la aplicación tiene `UPDATE`, `DELETE` ni `TRUNCATE` sobre esta tabla, un trigger
+`BEFORE UPDATE OR DELETE` lanza una excepción (`MC005`) aunque alguien conceda el permiso por error (I6), y un
+trigger `BEFORE INSERT` encadena cada fila con SHA-256 por clínica para detectar cualquier manipulación hecha por
+fuera de la aplicación (Módulo §9).
 
 ## systemErrorsLogs
 - errorId : BIGINT GENERATED ALWAYS AS IDENTITY (PK)
@@ -564,6 +568,9 @@ CREATE INDEX ix_patient_contacts_patient   ON PatientContacts (patientId);
 CREATE INDEX ix_audit_clinic_patient_date  ON auditLogs (clinicId, patientId, createdAt);
 CREATE INDEX ix_audit_clinic_user_date     ON auditLogs (clinicId, userId, createdAt);
 CREATE INDEX ix_audit_clinic_date          ON auditLogs (clinicId, createdAt);
+
+-- Módulo §9: último registro por clínica al encadenar y recorrido ordenado al verificar la cadena
+CREATE INDEX ix_audit_clinic_log           ON auditLogs (clinicId, logId);
 ```
 Los índices sobre `lower(period)` solo se usan si la consulta filtra con la misma expresión, por ejemplo
 `WHERE clinicId = $1 AND lower(period) >= $2 AND lower(period) < $3`.
@@ -1287,3 +1294,31 @@ en ~4 ms.
 | 400 | Parámetros inválidos, un rango al revés o de más de 366 días |
 | 403 | El rol no tiene `reports.read` (recepción, profesional) |
 | 404 | El profesional no existe o es de otra clínica (I5) |
+
+### Verificación de la bitácora de auditoría (Módulo §9, I6)
+
+#### `GET /audit/verify`
+Permiso `audit.read` (administrador de clínica). Recorre la cadena de huellas SHA-256 de `clinical.audit_logs`
+de la clínica del token mediante la función SQL `clinical.verify_audit_chain(clinic_id)` y comprueba dos cosas
+en cada fila: que `prev_hash` coincida con `row_hash` del registro previo de la clínica (`NULL` en el primero),
+y que `row_hash` coincida con el SHA-256 recalculado sobre las columnas del registro. Si alguien con acceso
+administrativo a PostgreSQL desactivó el trigger `trg_audit_logs_append_only` y alteró o borró un registro, la
+respuesta señala el primer `log_id` roto.
+
+```json
+{
+  "clinicId": 1,
+  "valid": true,
+  "checkedCount": 312,
+  "lastLogId": 934,
+  "lastRowHash": "a1b2c3d4e5f6...",
+  "firstBrokenLogId": null,
+  "failureReason": null
+}
+```
+
+| Código | Caso |
+|---|---|
+| 200 | Devuelve el estado de integridad de la cadena (`valid: true` o `valid: false` con `firstBrokenLogId` y `failureReason`) |
+| 400 | Se enviaron parámetros no admitidos en el query string (por ejemplo, `clinicId`) |
+| 401 / 403 | Sin token válido o sin el permiso `audit.read` |
