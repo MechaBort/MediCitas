@@ -1957,9 +1957,9 @@ por petición.
 | RF11 | Cancelar con motivo | ✔ `ck_appointments_cancellation` | ✔ `POST /appointments/{id}/cancel`, con pruebas |
 | RF12 | Desenlace después del inicio | ✔ trigger (`MC003`) | ✔ `POST /appointments/{id}/outcome`, con pruebas |
 | RF13 | Transiciones de estado | ✔ trigger (`MC002`) | ✔ las dos rutas anteriores traducen `MC002` a 409, con pruebas |
-| RF14 | Pacientes | ✔ `patients`, `patient_contacts` | ✘ |
+| RF14 | Pacientes | ✔ `patients`, `patient_contacts` | ✔ `/patients` (servicio `clinical`), con auditoría de contactos (`RF18`) y pruebas |
 | RF15 | Nota clínica del profesional que atendió | ◐ tabla y permisos; "el que atendió" lo filtra la API | ✘ |
-| RF16 | Historial del paciente | ✔ índice | ✘ |
+| RF16 | Historial del paciente | ✔ índice | ✔ `GET /appointments?patientId=…` (servicio `agenda`), con pruebas |
 | RF17 | Autenticación y matriz de permisos | ✔ realm, roles, matriz | ✔ `authenticate`, `identify`, `requirePermission` |
 | RF18 | Bitácora de accesos | ◐ tabla protegida; registrar cada acceso lo hace la API | ✘ |
 | RF19 | Consultar la bitácora con filtros | ✔ índices | ✘ |
