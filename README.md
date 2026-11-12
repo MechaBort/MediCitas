@@ -27,6 +27,42 @@ Diagramas de arquitectura y entidad-relación: [docs/diagramas.md](docs/diagrama
 Diccionario de datos: [docs/diccionario-datos.md](docs/diccionario-datos.md). Se genera desde la base con
 `./db/tools/generar-diccionario.sh` (con la pila levantada); las descripciones están en `db/sql/05-comments.sql`.
 
+### En Kubernetes (minikube)
+
+El mismo sistema se despliega en Kubernetes con un solo comando. Usa el mismo `.env` y los mismos archivos de
+`db/`, y **no corre a la vez que Compose**.
+
+```bash
+cp .env.example .env              # si todavía no existe
+minikube start --cpus=6 --memory=8192
+./k8s/deploy.sh
+```
+
+Los manifiestos están en `k8s/`, numerados en el orden en que se aplican. Las decisiones están en
+[docs/diseno-servicios.md](docs/diseno-servicios.md), sección 7.
+
+| Paso | Qué despliega | Estado |
+|---|---|---|
+| 1 | PostgreSQL 18 con el operador CloudNativePG (`Cluster`), su inicialización con el mismo `db/init/00-init.sh` de Compose (Job `db-init`) y PgBouncer en modo transacción (`Pooler`) | Hecho |
+| 2 | Los servicios `admin`, `agenda` y `clinical`, el gateway, Keycloak y Redis | Pendiente |
+| 3 | El HPA de `agenda` | Pendiente |
+
+Para revisar el paso 1:
+
+```bash
+kubectl -n medicitas get cluster,pooler,pods
+# Entrar a la base por PgBouncer como el usuario de agenda, igual que lo hará el servicio:
+kubectl -n medicitas run psql --rm -it --image=postgres:18-alpine --env=PGPASSWORD=<DB_AGENDA_SVC_PASSWORD> -- \
+  psql -h medicitas-db-pooler-rw -U mc_agenda_svc -d medicitas
+```
+
+`./k8s/deploy.sh` se puede repetir sin romper nada. Como en Compose, la base se inicializa **una sola vez**: para
+recrearla después de cambiar algo en `db/`, se borra el namespace con `kubectl delete namespace medicitas` y se vuelve
+a desplegar. `minikube delete` borra el clúster entero.
+
+Un `.env` creado antes de la etapa 3 no tiene las contraseñas de los usuarios por servicio. En ese caso
+`deploy.sh` dice qué variables faltan, y se copian desde `.env.example`.
+
 ### Usuarios de prueba
 
 Todos tienen la contraseña `medicitas` (solo para desarrollo). El `sub` del token es el `keycloak_sub` de

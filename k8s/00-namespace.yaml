@@ -1,0 +1,6 @@
+# Todo MediCitas vive en un solo namespace: un "espacio de nombres" que agrupa sus recursos y permite borrarlos de
+# una vez (kubectl delete namespace medicitas). El operador CloudNativePG vive aparte, en cnpg-system.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: medicitas

@@ -142,8 +142,19 @@ test('Módulo §9: inserciones concurrentes en la misma clínica serializan con 
   const afterRes = await api('GET', '/audit/verify', { token: sjAdmin });
   assert.equal(afterRes.status, 200);
   assert.equal(afterRes.body.valid, true);
-  assert.equal(afterRes.body.checkedCount, beforeRes.body.checkedCount + concurrency);
   assert.equal(afterRes.body.firstBrokenLogId, null);
+  // Otros archivos de prueba corren en paralelo y también escriben en la bitácora de esta clínica, así que el total
+  // puede crecer más que estas 8 filas: lo que se exige es que las 8 estén en la cadena y que nadie la bifurque.
+  assert.ok(afterRes.body.checkedCount >= beforeRes.body.checkedCount + concurrency);
+
+  // Sin bifurcación: ningún eslabón tiene dos sucesores (dos filas de la clínica con la misma huella previa).
+  const { rows: forks } = await db.query(
+    `SELECT prev_hash, count(*)::int AS n FROM clinical.audit_logs
+      WHERE clinic_id = $1 AND prev_hash IS NOT NULL
+      GROUP BY prev_hash HAVING count(*) > 1`,
+    [sjClinicId],
+  );
+  assert.deepEqual(forks, []);
 });
 
 test('Módulo §9, I6, I5: si mc_owner desactiva el trigger y altera un registro, GET /audit/verify señala exactamente ese log_id sin afectar a otras clínicas', async () => {

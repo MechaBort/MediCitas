@@ -477,8 +477,60 @@ réplicas. La réplica puede ir unos instantes atrasada respecto a la principal,
 **Compose no cambia:** sigue con un PostgreSQL simple. Compose y Kubernetes no corren a la vez ni comparten
 datos.
 
-**Riesgo conocido.** CloudNativePG ejecuta el SQL de inicialización como superusuario, mientras que nuestros
-scripts asumen `mc_owner`, el dueño de las tablas. Hay que adaptarlos al escribir los manifiestos.
+### Decisiones del paso 1 (`feat/k8s-postgres`, 2026-11-12)
+
+Los manifiestos están en `k8s/`, numerados en el orden en que se aplican, y `k8s/deploy.sh` los aplica todos con un
+solo comando.
+
+**Decisión: el operador CloudNativePG, en una versión fijada (1.30.1).**
+- **Problema.** PostgreSQL en Kubernetes necesita un disco que sobreviva al pod, contraseñas y direcciones estables y,
+  en el paso 4, una réplica con failover. Hacerlo a mano con un StatefulSet es mucho trabajo y fácil de equivocar.
+- **Elegido.** CloudNativePG 1.30.1, instalado con `kubectl apply` desde su manifiesto oficial, sin Helm. La versión
+  queda fija en `k8s/deploy.sh`, para que cada despliegue sea igual. Trae PostgreSQL 18, la misma versión mayor que
+  Compose.
+- **Lo que se sacrifica.** Una pieza más dentro del clúster, el operador, con sus propios recursos (CRDs).
+
+**Decisión: la base se inicializa con el mismo `db/init/00-init.sh` de Compose, en un Job.**
+- **Problema.** El operador ofrece `postInitApplicationSQL`, pero solo ejecuta SQL como superusuario. Nuestro script
+  crea los roles como superusuario y después ejecuta `db/sql/*.sql` como `mc_owner`, para que `mc_owner` sea el dueño
+  de todo y las funciones `SECURITY DEFINER` corran como `mc_owner`, no como superusuario.
+- **Elegido.** Un Job (`k8s/11-db-init-job.yaml`), un pod que corre hasta terminar, ejecuta ese mismo script contra
+  `medicitas-db-rw`. Entra como superusuario, con el Secret que crea el operador porque el Cluster tiene
+  `enableSuperuserAccess: true`. `k8s/deploy.sh` monta el script y `db/sql/` como ConfigMaps, generados desde los
+  archivos del repositorio.
+  - **Cambio mínimo en el script.** El bucle de `db/sql` usa la contraseña de `mc_owner` (`PGPASSWORD`), porque en
+    Kubernetes se entra por la red y no por el socket local. La marca de "inicialización completa" puede ir a otra
+    ruta (`MEDICITAS_INIT_MARKER`). Compose no cambia de comportamiento.
+  - **Se puede repetir.** Si `mc_owner` ya existe, el Job no hace nada. Así `deploy.sh` se puede volver a correr.
+- **Alternativas descartadas.**
+  - `postInitApplicationSQL` con `SET ROLE mc_owner` al principio de cada archivo: duplicaría los roles y los GRANT
+    en dos lugares, y los objetos quedarían con otro dueño.
+  - El recurso `DatabaseRole` de la 1.30, para declarar los roles: es otra fuente distinta de `00-init.sh`, y no
+    cubre el `ALTER ROLE … SET search_path` ni los `GRANT … WITH INHERIT FALSE, SET TRUE`.
+- **Lo que se sacrifica.** El operador crea además una base `app`, que no se usa.
+
+**Decisión: PgBouncer (Pooler) con 2 copias y 10 conexiones reales por usuario y copia.**
+- **Problema.** Con el HPA, `agenda` puede tener muchas copias, y cada una abre hasta 10 conexiones (el pool de
+  `packages/common/src/db.js`). Si cada copia se conectara directo a PostgreSQL, 8 copias de `agenda` ya superarían su
+  `CONNECTION LIMIT` de 40. Además, más conexiones no significan más capacidad (sección 6).
+- **Elegido.** Los servicios se conectan a `medicitas-db-pooler-rw` (PgBouncer, en modo transacción), y Keycloak, el
+  Job y las pruebas, directo a `medicitas-db-rw`.
+  - **2 copias de PgBouncer,** para que no sea un punto único de falla.
+  - **`default_pool_size: 10`.** Cada par (usuario, base) usa como máximo 10 conexiones reales por copia, es decir,
+    20 en total. Eso cabe en los `CONNECTION LIMIT` (admin 20, agenda 40, clinical 20) y suma 60 de las 100 de
+    `max_connections`; el resto queda para Keycloak y el superusuario.
+  - **`max_client_conn: 1000`.** Alcanza para 100 copias de `agenda` con su pool de 10. Las conexiones de clientes
+    son baratas: PgBouncer las atiende sin abrir conexiones reales.
+- **Por qué funciona con nuestro código.** El modo transacción presta una conexión real solo mientras dura una
+  transacción. `withTransaction` usa `SET LOCAL ROLE`, que termina con el COMMIT, y el `search_path` es una
+  propiedad del rol (`ALTER ROLE … IN DATABASE`), así que se aplica a cada conexión real que PgBouncer abre para ese
+  usuario.
+- **Autenticación.** La configura el operador: crea el usuario `cnpg_pooler_pgbouncer` y la función `user_search` en
+  la base `postgres`, con la que PgBouncer verifica las contraseñas.
+- **Lo que se sacrifica.**
+  - Las conexiones reales de `agenda` quedan topadas en 20, aunque su `CONNECTION LIMIT` sea 40. Se puede subir más
+    adelante con medición.
+  - En modo transacción no funcionan los `SET` de sesión ni los avisos (`LISTEN/NOTIFY`); el código no usa ninguno.
 
 ---
 
