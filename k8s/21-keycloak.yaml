@@ -1,0 +1,72 @@
+# Keycloak, con el realm importado desde keycloak/medicitas-realm.json (k8s/deploy.sh lo carga como ConfigMap), igual
+# que en Compose. Guarda su estado en la base keycloak del mismo Cluster de PostgreSQL, que crea db/init/00-init.sh.
+#
+# El emisor de los tokens (iss) es http://localhost:8080/realms/medicitas, como en Compose, porque KC_HOSTNAME es fijo.
+# Los servicios piden las llaves (JWKS) a keycloak:8080 dentro del clúster, y los clientes de fuera llegan con
+# kubectl port-forward svc/keycloak 8080:8080 (README, "En Kubernetes").
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: medicitas
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: keycloak }
+  template:
+    metadata:
+      labels: { app: keycloak }
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.7
+          args: ["start-dev", "--import-realm"]
+          envFrom:
+            # KC_DB_PASSWORD, KC_BOOTSTRAP_ADMIN_USERNAME, KC_BOOTSTRAP_ADMIN_PASSWORD y KEYCLOAK_USER_ADMIN_SECRET
+            # (este último lo usa el realm al importarse, como ${KEYCLOAK_USER_ADMIN_SECRET}).
+            - secretRef: { name: keycloak-env }
+          env:
+            - { name: KC_DB, value: postgres }
+            # Directo a la base, no por PgBouncer: Keycloak usa sentencias preparadas y su propio pool, que no
+            # funcionan bien con PgBouncer en modo transacción.
+            - { name: KC_DB_URL, value: "jdbc:postgresql://medicitas-db-rw:5432/keycloak" }
+            - { name: KC_DB_USERNAME, value: keycloak }
+            # Su pool de conexiones a la base: el de fábrica llega a 100, lo mismo que max_connections. Con 20, la suma
+            # con los pools de PgBouncer (60) queda por debajo de 100.
+            - { name: KC_DB_POOL_MAX_SIZE, value: "20" }
+            - { name: KC_HOSTNAME, value: "http://localhost:8080" }
+            - { name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC, value: "true" }
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: management, containerPort: 9000 }
+          # Keycloak tarda en arrancar (importa el realm): el startupProbe le da hasta 5 minutos antes de que
+          # empiecen a contar las otras dos sondas.
+          startupProbe:
+            httpGet: { path: /health/ready, port: management }
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: { path: /health/ready, port: management }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health/live, port: management }
+            periodSeconds: 20
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: realm
+          configMap: { name: keycloak-realm }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: medicitas
+spec:
+  selector: { app: keycloak }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

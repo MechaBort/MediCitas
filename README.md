@@ -44,8 +44,24 @@ Los manifiestos están en `k8s/`, numerados en el orden en que se aplican. Las d
 | Paso | Qué despliega | Estado |
 |---|---|---|
 | 1 | PostgreSQL 18 con el operador CloudNativePG (`Cluster`), su inicialización con el mismo `db/init/00-init.sh` de Compose (Job `db-init`) y PgBouncer en modo transacción (`Pooler`) | Hecho |
-| 2 | Los servicios `admin`, `agenda` y `clinical`, el gateway, Keycloak y Redis | Pendiente |
+| 2 | Los servicios `admin`, `agenda` y `clinical`, el gateway, Keycloak y Redis, con las imágenes construidas dentro de minikube y un Secret por componente | Hecho |
 | 3 | El HPA de `agenda` | Pendiente |
+
+Para usar la API desde esta máquina, se abren los puertos en otra terminal. Son los mismos que usa Compose, así que
+**no puede estar Compose arriba a la vez**:
+
+```bash
+kubectl -n medicitas port-forward svc/gateway 3000:3000
+kubectl -n medicitas port-forward svc/keycloak 8080:8080
+```
+
+Con eso, los `curl` de este README funcionan igual que en Compose, con el mismo `iss` en los tokens.
+
+Para correr **la misma suite de pruebas dentro del clúster**, contra el gateway de Kubernetes:
+
+```bash
+./k8s/run-tests.sh
+```
 
 Para revisar el paso 1:
 

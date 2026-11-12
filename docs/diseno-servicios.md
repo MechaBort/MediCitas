@@ -532,6 +532,63 @@ solo comando.
     adelante con medición.
   - En modo transacción no funcionan los `SET` de sesión ni los avisos (`LISTEN/NOTIFY`); el código no usa ninguno.
 
+### Decisiones del paso 2 (`feat/k8s-services`, 2026-11-12)
+
+**Decisión: un Deployment y un Service por componente, con los mismos nombres que en Compose.**
+- **Elegido.** `k8s/20-redis.yaml`, `21-keycloak.yaml`, `30-admin.yaml`, `31-agenda.yaml`, `32-clinical.yaml` y
+  `40-gateway.yaml`, cada uno con su Deployment (las copias) y su Service (el nombre fijo con que se encuentran).
+  - Como los Services se llaman igual que los servicios de Compose (`admin`, `agenda`, `clinical`, `keycloak`,
+    `redis`), `gateway/nginx.conf` y las variables de entorno son las mismas en los dos entornos.
+  - **Copias:**
+    - `agenda` empieza con 2, por ser el de más demanda (el HPA llega en el paso 3);
+    - el gateway tiene 2, para que no sea un punto único de falla;
+    - `admin`, `clinical`, Keycloak y Redis tienen 1.
+- **Lo que se sacrifica.** Keycloak y Redis con una sola copia son puntos únicos de falla. Para Redis es aceptable:
+  si cae, `agenda` consulta PostgreSQL. Para Keycloak, una caída impide pedir tokens nuevos, pero los ya emitidos
+  siguen sirviendo, porque los servicios guardan sus llaves (JWKS).
+
+**Decisión: las imágenes se construyen dentro de minikube, sin registro.**
+- **Problema.** Kubernetes descarga las imágenes de un registro (como Docker Hub), y las nuestras solo existen en la
+  laptop.
+- **Elegido.** `deploy.sh` usa `minikube docker-env` para construir con el Docker de minikube, con los mismos
+  Dockerfile que Compose, y los Deployments usan `imagePullPolicy: Never`.
+  - Cada Deployment lleva una anotación con el id de su imagen (`medicitas/image-id`). Si el código cambia, el id
+    cambia y Kubernetes reemplaza las copias. Si no cambia, no las toca.
+  - El gateway hace lo mismo con un resumen (hash) de `nginx.conf`.
+- **Alternativa descartada.** Publicar las imágenes en un registro: exige cuentas y credenciales, y no aporta nada en
+  una demostración local.
+- **Lo que se sacrifica.** Los manifiestos de los servicios tienen un marcador (`__IMAGE_ID__`) que reemplaza
+  `deploy.sh`, así que se aplican con el script y no con `kubectl apply` directo.
+
+**Decisión: un Secret por componente.**
+- Cada servicio recibe solo la contraseña de **su** usuario de base, más lo propio de cada uno: el secreto del cliente
+  de Keycloak en `admin`, y la contraseña de Redis en `agenda`.
+- Si se filtra el Secret de `clinical`, no sirve para entrar como `admin`. Es el mismo principio de menor privilegio
+  que tienen los usuarios de base.
+
+**Decisión: dos sondas distintas en cada servicio.**
+- **Elegido.**
+  - La de **disponibilidad** (`readinessProbe`) consulta `/health`, que revisa la base: si la base no responde, esa
+    copia deja de recibir tráfico.
+  - La de **vida** (`livenessProbe`) solo revisa que el proceso escuche en su puerto.
+- **Por qué no usar `/health` en las dos.** Si la base cayera, Kubernetes reiniciaría todas las copias una y otra vez
+  sin arreglar nada, y además las desconectaría justo cuando la base volviera.
+
+**Decisión: Keycloak se conecta directo a la base y con un pool de 20.**
+- **Directo, no por PgBouncer.** Keycloak usa sentencias preparadas y su propio pool, que no funcionan bien con
+  PgBouncer en modo transacción.
+- **Con un pool de 20** (`KC_DB_POOL_MAX_SIZE`). El de fábrica llega a 100, que por sí solo podría agotar
+  `max_connections`. Con 20, la suma con los pools de PgBouncer (60) queda por debajo de 100.
+
+**Decisión: se entra con `kubectl port-forward`, y la suite corre dentro del clúster.**
+- **Cómo se entra.** `port-forward` abre `localhost:3000` (el gateway) y `localhost:8080` (Keycloak). El emisor de
+  los tokens sigue siendo `http://localhost:8080/realms/medicitas`, como en Compose, y los `curl` del README sirven
+  sin cambios.
+- **La evidencia.** `k8s/run-tests.sh` corre **la misma suite de `npm test`** en un Job dentro del clúster, contra el
+  gateway de Kubernetes.
+- **Alternativa descartada.** Un Ingress con un dominio propio: exige configurar DNS o `/etc/hosts`, y cambiaría el
+  `iss` de los tokens.
+
 ---
 
 ## 8. Caché de disponibilidad

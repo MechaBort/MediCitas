@@ -1,0 +1,51 @@
+# Gateway Nginx: la única entrada de la API. Usa el MISMO gateway/nginx.conf que Compose, cargado como ConfigMap por
+# k8s/deploy.sh: funciona igual porque los Services se llaman como los servicios de Compose (admin, agenda, clinical).
+# Dos copias detrás del Service, para que no sea un punto único de falla (docs/diseno-servicios.md §3).
+#
+# Nginx resuelve los nombres de los servicios una sola vez, al arrancar. En Kubernetes eso no es un problema: la
+# dirección de un Service es fija, aunque sus pods cambien.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: medicitas
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: gateway }
+  template:
+    metadata:
+      labels: { app: gateway }
+      annotations:
+        # Cambia cuando cambia gateway/nginx.conf: así un cambio de configuración reinicia las copias.
+        medicitas/config-hash: "__CONFIG_HASH__"
+    spec:
+      containers:
+        - name: gateway
+          image: nginx:1.28-alpine
+          ports:
+            - { name: http, containerPort: 3000 }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 10
+          volumeMounts:
+            - { name: config, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true }
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: config
+          configMap: { name: gateway-nginx }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: medicitas
+spec:
+  selector: { app: gateway }
+  ports:
+    - { port: 3000, targetPort: http }

@@ -2028,10 +2028,35 @@ kubectl -n medicitas run psql --rm -it --image=postgres:18-alpine --env=PGPASSWO
 #   BEGIN; SET LOCAL ROLE mc_platform;                    -> ERROR: permission denied (agenda no atiende la plataforma)
 ```
 
+### 9b.3 Paso 2: los servicios, el gateway, Keycloak y Redis 🔴
+
+Cada componente tiene en `k8s/` un **Deployment** (cuántas copias) y un **Service** (el nombre fijo para
+encontrarlo). Los Services se llaman igual que en Compose (`admin`, `agenda`, `clinical`, `keycloak`, `redis`,
+`gateway`), y por eso `gateway/nginx.conf` y las variables de entorno son las mismas en los dos entornos.
+
+- **Imágenes.** `deploy.sh` las construye con el Docker de minikube (`minikube docker-env`), con los mismos
+  Dockerfile que usa Compose. Si el código cambia, el id de la imagen cambia y Kubernetes reemplaza las copias.
+- **Secrets.** Hay uno por componente: cada servicio recibe solo la contraseña de su propio usuario de base.
+- **Dos sondas.**
+  - La de disponibilidad (`/health`) saca del tráfico una copia que no llega a la base.
+  - La de vida solo revisa que el proceso escuche en su puerto. Si también usara `/health`, una caída de la base
+    haría que Kubernetes reiniciara todas las copias en cadena.
+- **Entrada.** `kubectl port-forward` abre `localhost:3000` y `localhost:8080`, igual que Compose.
+
+**E41. La misma suite, dentro del clúster:**
+
+```bash
+./k8s/run-tests.sh                                        # el Job "tests" corre npm test contra el gateway de Kubernetes
+kubectl -n medicitas get pods -o wide                     # 2 copias de agenda y 2 del gateway
+kubectl -n medicitas delete pod -l app=agenda --wait=false; kubectl -n medicitas get pods -w   # Kubernetes las recrea
+```
+
 **Preguntas de control.**
 - ¿Por qué la base se inicializa con un Job y no con el SQL de inicialización que ofrece el operador?
 - Si `agenda` escala a 20 copias, ¿cuántas conexiones reales abre contra PostgreSQL? ¿Por qué?
 - ¿Qué pasaría con PgBouncer en modo transacción si el código usara `SET ROLE` sin `LOCAL`?
+- ¿Por qué la sonda de vida de los servicios no usa `/health`?
+- Si se borra un pod de `agenda`, ¿qué hace Kubernetes y por qué no se corta el servicio?
 
 ## Parte 10. Estado de los requisitos
 
