@@ -2,7 +2,7 @@
 // SHA-256 por clínica en clinical.audit_logs, verificable desde GET /audit/verify.
 import { before, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { api, requireStack, token } from './helpers.js';
+import { api, newPerson, requireStack, token, unique } from './helpers.js';
 import { ownerDb } from './db.js';
 
 requireStack();
@@ -17,6 +17,10 @@ let platformToken;
 let sjClinicId;
 let sjUserId;
 let sjPatientId;
+// Clínica propia para las pruebas que alteran o borran eslabones. La cadena de huellas es por clínica, y los demás
+// archivos de prueba escriben en la bitácora de San José en paralelo: si estas pruebas la manipularan, una fila ajena
+// podría quedar encadenada a un eslabón borrado, y la cadena de San José quedaría rota para todas las pruebas.
+let tamper;         // { clinicId, userId, patientId, admin }
 const createdLogIds = [];
 
 before(async () => {
@@ -40,6 +44,26 @@ before(async () => {
   sjClinicId = rows[0].clinicId;
   sjUserId = rows[0].userId;
   sjPatientId = rows[0].patientId;
+
+  // La clínica propia se crea por la API (RF1), con su administrador y un paciente con un contacto: su alta deja la
+  // primera fila de su bitácora (RF18), que inicia la cadena.
+  const adminPerson = newPerson('admin.cadena.');
+  const clinic = await api('POST', '/clinics', {
+    token: platformToken,
+    body: { clinicCode: unique('cadena'), clinicName: 'Clínica de prueba del §9', timeZone: 'America/Costa_Rica', admin: adminPerson },
+  });
+  assert.equal(clinic.status, 201, JSON.stringify(clinic.body));
+  const admin = await token(adminPerson.username, adminPerson.password);
+  const me = (await api('GET', '/me', { token: admin })).body;
+  const patient = await api('POST', '/patients', {
+    token: admin,
+    body: {
+      identification: unique('id-'), name: 'Paciente', lastName: 'De Prueba', birthDate: '1990-01-01', gender: 'otro',
+      contacts: [{ type: 'telefono', value: '+506 8000 0000' }],
+    },
+  });
+  assert.equal(patient.status, 201, JSON.stringify(patient.body));
+  tamper = { clinicId: me.clinicId, userId: me.userId, patientId: patient.body.patientId, admin };
 });
 
 test('I6: ningún rol de la aplicación tiene UPDATE, DELETE ni TRUNCATE sobre audit_logs, y los triggers rechazan cambios con MC005', async () => {
@@ -163,7 +187,7 @@ test('Módulo §9, I6, I5: si mc_owner desactiva el trigger y altera un registro
     `INSERT INTO clinical.audit_logs (clinic_id, user_id, event_type_id, data_object_id, object_id, patient_id, description)
      VALUES ($1, $2, 1, 2, 101, $3, 'Registro íntegro antes de prueba de manipulación')
      RETURNING log_id, description`,
-    [sjClinicId, sjUserId, sjPatientId],
+    [tamper.clinicId, tamper.userId, tamper.patientId],
   );
   const targetLogId = Number(firstInsert.rows[0].log_id);
   const originalDescription = firstInsert.rows[0].description;
@@ -173,7 +197,7 @@ test('Módulo §9, I6, I5: si mc_owner desactiva el trigger y altera un registro
     `INSERT INTO clinical.audit_logs (clinic_id, user_id, event_type_id, data_object_id, object_id, patient_id, description)
      VALUES ($1, $2, 1, 2, 102, $3, 'Registro posterior al manipulado')
      RETURNING log_id`,
-    [sjClinicId, sjUserId, sjPatientId],
+    [tamper.clinicId, tamper.userId, tamper.patientId],
   );
   createdLogIds.push(Number(secondInsert.rows[0].log_id));
 
@@ -190,12 +214,12 @@ test('Módulo §9, I6, I5: si mc_owner desactiva el trigger y altera un registro
     await client.query('ALTER TABLE clinical.audit_logs ENABLE TRIGGER trg_audit_logs_append_only');
     await client.query('COMMIT');
 
-    // San José detecta el registro adulterado exacto.
-    const sjVerify = await api('GET', '/audit/verify', { token: sjAdmin });
-    assert.equal(sjVerify.status, 200);
-    assert.equal(sjVerify.body.valid, false);
-    assert.equal(sjVerify.body.firstBrokenLogId, targetLogId);
-    assert.match(sjVerify.body.failureReason ?? '', /row_hash/);
+    // La clínica manipulada detecta el registro adulterado exacto.
+    const tamperVerify = await api('GET', '/audit/verify', { token: tamper.admin });
+    assert.equal(tamperVerify.status, 200);
+    assert.equal(tamperVerify.body.valid, false);
+    assert.equal(tamperVerify.body.firstBrokenLogId, targetLogId);
+    assert.match(tamperVerify.body.failureReason ?? '', /row_hash/);
 
     // I5: la cadena de Cartago sigue íntegra.
     const cartagoVerify = await api('GET', '/audit/verify', { token: cartagoAdmin });
@@ -215,7 +239,7 @@ test('Módulo §9, I6, I5: si mc_owner desactiva el trigger y altera un registro
   }
 
   // Una vez restaurado el contenido original, la cadena vuelve a ser válida.
-  const restoredVerify = await api('GET', '/audit/verify', { token: sjAdmin });
+  const restoredVerify = await api('GET', '/audit/verify', { token: tamper.admin });
   assert.equal(restoredVerify.status, 200);
   assert.equal(restoredVerify.body.valid, true);
   assert.equal(restoredVerify.body.firstBrokenLogId, null);
@@ -226,7 +250,7 @@ test('Módulo §9, I6: si mc_owner desactiva el trigger y borra un eslabón inte
     `INSERT INTO clinical.audit_logs (clinic_id, user_id, event_type_id, data_object_id, object_id, patient_id, description)
      VALUES ($1, $2, 1, 2, 201, $3, 'Eslabón intermedio que será borrado')
      RETURNING log_id`,
-    [sjClinicId, sjUserId, sjPatientId],
+    [tamper.clinicId, tamper.userId, tamper.patientId],
   );
   const deletedLogId = Number(firstInsert.rows[0].log_id);
 
@@ -234,7 +258,7 @@ test('Módulo §9, I6: si mc_owner desactiva el trigger y borra un eslabón inte
     `INSERT INTO clinical.audit_logs (clinic_id, user_id, event_type_id, data_object_id, object_id, patient_id, description)
      VALUES ($1, $2, 1, 2, 202, $3, 'Eslabón siguiente cuyo prev_hash quedará huérfano')
      RETURNING log_id`,
-    [sjClinicId, sjUserId, sjPatientId],
+    [tamper.clinicId, tamper.userId, tamper.patientId],
   );
   const nextLogId = Number(secondInsert.rows[0].log_id);
 
@@ -246,7 +270,7 @@ test('Módulo §9, I6: si mc_owner desactiva el trigger y borra un eslabón inte
     await client.query('ALTER TABLE clinical.audit_logs ENABLE TRIGGER trg_audit_logs_append_only');
     await client.query('COMMIT');
 
-    const verifyRes = await api('GET', '/audit/verify', { token: sjAdmin });
+    const verifyRes = await api('GET', '/audit/verify', { token: tamper.admin });
     assert.equal(verifyRes.status, 200);
     assert.equal(verifyRes.body.valid, false);
     assert.equal(verifyRes.body.firstBrokenLogId, nextLogId);
@@ -262,7 +286,7 @@ test('Módulo §9, I6: si mc_owner desactiva el trigger y borra un eslabón inte
     client.release();
   }
 
-  const cleanVerify = await api('GET', '/audit/verify', { token: sjAdmin });
+  const cleanVerify = await api('GET', '/audit/verify', { token: tamper.admin });
   assert.equal(cleanVerify.status, 200);
   assert.equal(cleanVerify.body.valid, true);
 });

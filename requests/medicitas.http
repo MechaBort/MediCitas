@@ -1,8 +1,30 @@
 # =============================================================================
-# MediCitas · Colección de peticiones HTTP versionada (§5 del enunciado)
+# MediCitas · Colección de peticiones HTTP versionada
 #
-# Compatible con la extensión REST Client de VS Code y con el cliente HTTP de
-# JetBrains. Ejecutar primero el bloque 1 para cargar los tokens en variables.
+# Cubre todas las rutas de la API (RF1–RF21 y el módulo §9), más los casos de
+# rechazo (400, 401, 403, 404 y 409) que demuestran las invariantes.
+#
+# Cómo usarla:
+# - En VS Code, con la extensión REST Client: "Send Request" sobre cada bloque.
+# - Desde la terminal, sin instalar nada (Node 24): ejecuta todas en orden y
+#   compara cada respuesta con el código que anuncia su título.
+#     node tests/tools/correr-coleccion.mjs citaPasadaId=<id> hoy=<YYYY-MM-DD>
+#   Cualquier variable de abajo se puede reemplazar así (apiUrl=…, dia=…).
+#
+# Está pensada para correrse en orden, una vez, sobre una base recién creada
+# (docker compose down -v && docker compose up). Primero el bloque 1, que guarda
+# los tokens en variables; las peticiones siguientes reutilizan los ids que
+# devuelven las anteriores.
+#
+# Antes de empezar, ajustar dos variables:
+# - @dia: un lunes futuro FUERA del rango del seed (el seed llega a 4 semanas
+#   adelante). La colección le crea el horario a la Dra. Mora ese día (RF5),
+#   así no depende de la fecha en que se inicializó la base. Para repetir la
+#   colección sin `down -v`, basta con cambiar @dia por otro lunes.
+# - @citaPasadaId: una cita de la Dra. Mora que siga "reservada" aunque su hora
+#   ya empezó. Se obtiene con la petición 6.1 (agenda de @hoy). El seed deja
+#   reservadas las citas que empiezan después de inicializar la base, así que
+#   unas horas después siempre hay alguna.
 # =============================================================================
 
 @apiUrl = http://localhost:3000
@@ -10,12 +32,24 @@
 @realm = medicitas
 @clientId = medicitas-api
 
+@dia = 2027-03-01
+@hoy = 2026-11-13
+@citaPasadaId = 0
+
+# Ids del seed: Dra. Laura Mora (profesional 6, atiende el servicio 2,
+# "Consulta general", de 30 minutos), Dr. Andrés Solís (7, servicios 2 y 4) y
+# los pacientes 1 a 4 de la Clínica San José (clínica 1).
+@laura = 6
+@andres = 7
+@consultaGeneral = 2
+
+
 # =============================================================================
-# 1. OBTENCIÓN DE TOKENS EN KEYCLOAK (RF17)
-# Todos los usuarios de demostración usan la contraseña: medicitas
+# 1. TOKENS DE KEYCLOAK (RF17)
+# Todos los usuarios de demostración usan la contraseña "medicitas".
 # =============================================================================
 
-### 1.1 Token de recepción (Clínica San José)
+### 1.1 Recepción (Clínica San José)
 # @name loginRecepcion
 POST {{keycloakUrl}}/realms/{{realm}}/protocol/openid-connect/token
 Content-Type: application/x-www-form-urlencoded
@@ -23,9 +57,9 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=password&client_id={{clientId}}&username=recepcion.sanjose&password=medicitas
 
 ###
-@receptionToken = {{loginRecepcion.response.body.access_token}}
+@receptionToken = {{loginRecepcion.response.body.$.access_token}}
 
-### 1.2 Token de administrador de clínica (Clínica San José)
+### 1.2 Administrador de clínica (San José)
 # @name loginAdmin
 POST {{keycloakUrl}}/realms/{{realm}}/protocol/openid-connect/token
 Content-Type: application/x-www-form-urlencoded
@@ -33,9 +67,9 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=password&client_id={{clientId}}&username=admin.sanjose&password=medicitas
 
 ###
-@adminToken = {{loginAdmin.response.body.access_token}}
+@adminToken = {{loginAdmin.response.body.$.access_token}}
 
-### 1.3 Token de profesional (Dra. Laura Mora, Clínica San José)
+### 1.3 Profesional (Dra. Laura Mora, San José)
 # @name loginProfesional
 POST {{keycloakUrl}}/realms/{{realm}}/protocol/openid-connect/token
 Content-Type: application/x-www-form-urlencoded
@@ -43,9 +77,9 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=password&client_id={{clientId}}&username=laura.mora&password=medicitas
 
 ###
-@professionalToken = {{loginProfesional.response.body.access_token}}
+@professionalToken = {{loginProfesional.response.body.$.access_token}}
 
-### 1.4 Token de administrador de plataforma
+### 1.4 Administrador de plataforma
 # @name loginPlataforma
 POST {{keycloakUrl}}/realms/{{realm}}/protocol/openid-connect/token
 Content-Type: application/x-www-form-urlencoded
@@ -53,9 +87,9 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=password&client_id={{clientId}}&username=plataforma&password=medicitas
 
 ###
-@platformToken = {{loginPlataforma.response.body.access_token}}
+@platformToken = {{loginPlataforma.response.body.$.access_token}}
 
-### 1.5 Token de otra clínica (Recepción Cartago, para pruebas de aislamiento I5)
+### 1.5 Recepción de otra clínica (Cartago), para los intentos de fuga (I5)
 # @name loginCartago
 POST {{keycloakUrl}}/realms/{{realm}}/protocol/openid-connect/token
 Content-Type: application/x-www-form-urlencoded
@@ -63,95 +97,26 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=password&client_id={{clientId}}&username=recepcion.cartago&password=medicitas
 
 ###
-@cartagoToken = {{loginCartago.response.body.access_token}}
+@cartagoToken = {{loginCartago.response.body.$.access_token}}
 
 
 # =============================================================================
-# 2. SALUD E IDENTIDAD RESUELTA (/health y /me)
+# 2. SALUD E IDENTIDAD
 # =============================================================================
 
-### 2.1 Estado de salud de la pila (200 OK, sin token)
+### 2.1 Salud de la pila (200, sin token)
 GET {{apiUrl}}/health
 
-### 2.2 Identidad resuelta del token en la clínica (200 OK)
+### 2.2 La identidad que resolvió la API: usuario, clínica, rol y permisos (200)
 GET {{apiUrl}}/me
 Authorization: Bearer {{receptionToken}}
 
 
 # =============================================================================
-# 3. CICLO COMPLETO DE UNA CITA (RF7, RF8, RF9, RF10, RF11, RF12, RF13, I7, I8)
+# 3. CLÍNICAS Y USUARIOS (RF1, RF2)
 # =============================================================================
 
-### 3.1 Consultar disponibilidad de un profesional en una fecha (RF7 — 1ª vez: X-MediCitas-Cache: miss)
-GET {{apiUrl}}/availability/professionals/6?serviceId=1&date=2026-11-16
-Authorization: Bearer {{receptionToken}}
-
-### 3.2 Repetir la consulta de disponibilidad (RF7, I8 — 2ª vez: X-MediCitas-Cache: hit desde Redis)
-GET {{apiUrl}}/availability/professionals/6?serviceId=1&date=2026-11-16
-Authorization: Bearer {{receptionToken}}
-
-### 3.3 Consultar disponibilidad por servicio en un rango de fechas (RF8)
-GET {{apiUrl}}/availability/services/1?from=2026-11-16&to=2026-11-20
-Authorization: Bearer {{receptionToken}}
-
-### 3.4 Reservar una cita en un espacio disponible (RF9, I4 — 201 Created; invalida la caché de ese día)
-# @name crearCita
-POST {{apiUrl}}/appointments
-Authorization: Bearer {{receptionToken}}
-Content-Type: application/json
-
-{
-  "patientId": 1,
-  "professionalId": 6,
-  "serviceId": 1,
-  "start": "2026-11-16T08:00:00-06:00",
-  "description": "Control general de demostración"
-}
-
-###
-@citaId = {{crearCita.response.body.appointmentId}}
-
-### 3.5 Reprogramar la cita a un nuevo horario en una sola transacción (RF10, I7 — 201 Created)
-# @name reprogramarCita
-POST {{apiUrl}}/appointments/{{citaId}}/reschedule
-Authorization: Bearer {{receptionToken}}
-Content-Type: application/json
-
-{
-  "start": "2026-11-16T08:30:00-06:00"
-}
-
-###
-@citaReprogramadaId = {{reprogramarCita.response.body.appointmentId}}
-
-### 3.6 Cancelar la cita reprogramada con motivo (RF11, I7 — 200 OK; libera el espacio de inmediato)
-POST {{apiUrl}}/appointments/{{citaReprogramadaId}}/cancel
-Authorization: Bearer {{receptionToken}}
-Content-Type: application/json
-
-{
-  "reason": "El paciente solicitó cancelar por viaje imprevisto"
-}
-
-### 3.7 Registrar el desenlace de una cita cuya hora de inicio ya pasó (RF12 — 200 OK)
-POST {{apiUrl}}/appointments/1/outcome
-Authorization: Bearer {{professionalToken}}
-Content-Type: application/json
-
-{
-  "outcome": "atendida"
-}
-
-
-# =============================================================================
-# 4. ADMINISTRACIÓN DE CLÍNICAS Y USUARIOS (RF1, RF2)
-# =============================================================================
-
-### 4.1 Listar usuarios de la clínica del token (RF2, I5 — 200 OK)
-GET {{apiUrl}}/users
-Authorization: Bearer {{adminToken}}
-
-### 4.2 Dar de alta una clínica nueva y su administrador inicial (RF1 — 201 Created)
+### 3.1 Alta de una clínica con su primer administrador (RF1, 201; solo la plataforma)
 POST {{apiUrl}}/clinics
 Authorization: Bearer {{platformToken}}
 Content-Type: application/json
@@ -163,69 +128,415 @@ Content-Type: application/json
   "admin": {
     "username": "admin.heredia",
     "email": "admin.heredia@medicitas.example",
-    "name": " Valeria",
+    "name": "Valeria",
     "lastName": "Solís Mora",
     "password": "medicitas",
     "temporaryPassword": false
   }
 }
 
+### 3.2 Usuarios de la clínica del token (RF2, 200)
+GET {{apiUrl}}/users
+Authorization: Bearer {{adminToken}}
+
 
 # =============================================================================
-# 5. CASOS DE RECHAZO: 400, 401, 403, 404 (I5) Y 409 (I1, I2, RF12, RF13)
+# 4. CATÁLOGOS: SERVICIOS Y PROFESIONALES (RF3, RF4)
 # =============================================================================
 
-### 5.1 [401 Unauthorized] Petición sin encabezado Authorization
-GET {{apiUrl}}/users
+### 4.1 Especialidades disponibles (200)
+GET {{apiUrl}}/services/specialties
+Authorization: Bearer {{adminToken}}
 
-### 5.2 [401 Unauthorized] Token con firma adulterada
-GET {{apiUrl}}/me
-Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjMifQ.firma_invalida
+### 4.2 Catálogo de servicios de la clínica (RF3, 200)
+GET {{apiUrl}}/services
+Authorization: Bearer {{adminToken}}
 
-### 5.3 [403 Forbidden] Recepción intenta administrar usuarios (carece del permiso users.manage)
-GET {{apiUrl}}/users
+### 4.3 Nuevo servicio: nombre, duración y especialidad que requiere (RF3, 201)
+# @name crearServicio
+POST {{apiUrl}}/services
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "serviceName": "Control de presión arterial",
+  "durationMinutes": 20,
+  "specialtyId": 3
+}
+
+### 4.4 Cambiar la duración del servicio: solo afecta a las citas nuevas (RF3, I4, 200)
+PATCH {{apiUrl}}/services/{{crearServicio.response.body.$.serviceId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "durationMinutes": 25
+}
+
+### 4.5 Profesionales de la clínica, con sus especialidades y servicios (RF4, 200)
+GET {{apiUrl}}/professionals
+Authorization: Bearer {{adminToken}}
+
+### 4.6 Habilitar a la Dra. Mora para el servicio nuevo, además del que ya atiende (RF4, 200)
+PUT {{apiUrl}}/professionals/{{laura}}/services
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "serviceIds": [{{consultaGeneral}}, {{crearServicio.response.body.$.serviceId}}]
+}
+
+
+# =============================================================================
+# 5. HORARIO Y BLOQUEOS (RF5, RF6)
+# =============================================================================
+
+### 5.1 Jornada partida de la Dra. Mora en @dia: mañana (RF5, 201)
+POST {{apiUrl}}/schedules
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "professionalId": {{laura}},
+  "date": "{{dia}}",
+  "startTime": "08:00",
+  "endTime": "12:00"
+}
+
+### 5.2 Jornada partida de la Dra. Mora en @dia: tarde (RF5, 201)
+POST {{apiUrl}}/schedules
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "professionalId": {{laura}},
+  "date": "{{dia}}",
+  "startTime": "13:00",
+  "endTime": "17:00"
+}
+
+### 5.3 La profesional consulta su propio horario (RF5, 200)
+GET {{apiUrl}}/schedules?professionalId={{laura}}&from={{dia}}&to={{dia}}
+Authorization: Bearer {{professionalToken}}
+
+### 5.4 Horario del Dr. Solís en @dia, para los casos de I2 y de reprogramar con otro profesional (201)
+POST {{apiUrl}}/schedules
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "professionalId": {{andres}},
+  "date": "{{dia}}",
+  "startTime": "08:00",
+  "endTime": "12:00"
+}
+
+
+# =============================================================================
+# 6. RECORRIDO COMPLETO DE UNA CITA (RF7–RF13, I1, I3, I4, I7, I8)
+# =============================================================================
+
+### 6.1 Agenda de hoy de la Dra. Mora (RF20): de aquí sale @citaPasadaId
+# Copiar el appointmentId de una cita "reservada" cuyo "start" ya pasó.
+GET {{apiUrl}}/agenda?date={{hoy}}&professionalId={{laura}}
 Authorization: Bearer {{receptionToken}}
 
-### 5.4 [403 Forbidden] Un profesional intenta cancelar una cita (carece de appointments.manage)
-POST {{apiUrl}}/appointments/1/cancel
+### 6.2 Espacios libres de la Dra. Mora en @dia (RF7). Primera vez: X-MediCitas-Cache: miss
+GET {{apiUrl}}/availability/professionals/{{laura}}?serviceId={{consultaGeneral}}&date={{dia}}
+Authorization: Bearer {{receptionToken}}
+
+### 6.3 La misma consulta otra vez (RF7, I8). Ahora: X-MediCitas-Cache: hit, desde Redis
+GET {{apiUrl}}/availability/professionals/{{laura}}?serviceId={{consultaGeneral}}&date={{dia}}
+Authorization: Bearer {{receptionToken}}
+
+### 6.4 Disponibilidad por servicio en un rango: qué profesionales tienen espacio (RF8, 200)
+GET {{apiUrl}}/availability/services/{{consultaGeneral}}?from={{dia}}&to={{dia}}
+Authorization: Bearer {{receptionToken}}
+
+### 6.5 Reservar 08:00 (RF9, 201). El fin lo calcula la base según el servicio (I4)
+# @name crearCita
+POST {{apiUrl}}/appointments
+Authorization: Bearer {{receptionToken}}
+Content-Type: application/json
+
+{
+  "patientId": 1,
+  "professionalId": {{laura}},
+  "serviceId": {{consultaGeneral}},
+  "start": "{{dia}}T08:00:00-06:00",
+  "description": "Control general de demostración"
+}
+
+###
+@citaId = {{crearCita.response.body.$.appointmentId}}
+
+### 6.6 Disponibilidad después de reservar (I8): miss, porque la reserva invalidó la copia, y ya no está el 08:00
+GET {{apiUrl}}/availability/professionals/{{laura}}?serviceId={{consultaGeneral}}&date={{dia}}
+Authorization: Bearer {{receptionToken}}
+
+### 6.7 [409] Otra reserva sobre el mismo espacio y la misma profesional (I1: ex_appointments_professional)
+POST {{apiUrl}}/appointments
+Authorization: Bearer {{receptionToken}}
+Content-Type: application/json
+
+{
+  "patientId": 2,
+  "professionalId": {{laura}},
+  "serviceId": {{consultaGeneral}},
+  "start": "{{dia}}T08:00:00-06:00"
+}
+
+### 6.8 [409] El mismo paciente, a la misma hora, con otro profesional (I2: ex_appointments_patient)
+POST {{apiUrl}}/appointments
+Authorization: Bearer {{receptionToken}}
+Content-Type: application/json
+
+{
+  "patientId": 1,
+  "professionalId": {{andres}},
+  "serviceId": {{consultaGeneral}},
+  "start": "{{dia}}T08:00:00-06:00"
+}
+
+### 6.9 Reprogramar a las 09:00 en una sola transacción (RF10, I7, 201): la original queda "reprogramada"
+# @name reprogramarCita
+POST {{apiUrl}}/appointments/{{citaId}}/reschedule
+Authorization: Bearer {{receptionToken}}
+Content-Type: application/json
+
+{
+  "start": "{{dia}}T09:00:00-06:00"
+}
+
+###
+@citaReprogramadaId = {{reprogramarCita.response.body.$.appointmentId}}
+
+### 6.10 El 08:00 quedó libre de inmediato (I7): otro paciente lo reserva (201)
+# @name reservarLiberado
+POST {{apiUrl}}/appointments
+Authorization: Bearer {{receptionToken}}
+Content-Type: application/json
+
+{
+  "patientId": 2,
+  "professionalId": {{laura}},
+  "serviceId": {{consultaGeneral}},
+  "start": "{{dia}}T08:00:00-06:00"
+}
+
+### 6.11 Cancelar la cita reprogramada, con motivo (RF11, I7, 200)
+POST {{apiUrl}}/appointments/{{citaReprogramadaId}}/cancel
+Authorization: Bearer {{receptionToken}}
+Content-Type: application/json
+
+{
+  "reason": "El paciente solicitó cancelar por un viaje imprevisto"
+}
+
+### 6.12 [409] Cancelar otra vez: "cancelada" es un estado final (RF13, MC002)
+POST {{apiUrl}}/appointments/{{citaReprogramadaId}}/cancel
+Authorization: Bearer {{receptionToken}}
+Content-Type: application/json
+
+{
+  "reason": "Segundo intento sobre una cita ya cancelada"
+}
+
+### 6.13 [409] Desenlace de una cita que todavía no empieza (RF12, MC003)
+POST {{apiUrl}}/appointments/{{reservarLiberado.response.body.$.appointmentId}}/outcome
 Authorization: Bearer {{professionalToken}}
 Content-Type: application/json
 
 {
-  "reason": "Intento de cancelación por profesional"
+  "outcome": "atendida"
 }
 
-### 5.5 [403 Forbidden] Administrador de plataforma intenta usar el servicio agenda
-GET {{apiUrl}}/availability/professionals/6?serviceId=1&date=2026-11-16
+### 6.14 Desenlace de una cita que ya empezó: la profesional la marca atendida (RF12, 200)
+POST {{apiUrl}}/appointments/{{citaPasadaId}}/outcome
+Authorization: Bearer {{professionalToken}}
+Content-Type: application/json
+
+{
+  "outcome": "atendida"
+}
+
+
+# =============================================================================
+# 7. PACIENTES E HISTORIAL (RF14, RF16, RF18)
+# =============================================================================
+
+### 7.1 Registrar un paciente con sus contactos (RF14, 201). Cada contacto creado queda en la bitácora (RF18)
+# @name crearPaciente
+POST {{apiUrl}}/patients
+Authorization: Bearer {{receptionToken}}
+Content-Type: application/json
+
+{
+  "identification": "1-1234-5678",
+  "name": "María",
+  "lastName": "Vargas Mora",
+  "birthDate": "1992-05-14",
+  "gender": "femenino",
+  "contacts": [
+    { "type": "telefono", "value": "+506 8888 1234" },
+    { "type": "email", "value": "maria.vargas@example.com" }
+  ]
+}
+
+###
+@pacienteId = {{crearPaciente.response.body.$.patientId}}
+
+### 7.2 Leer el paciente con sus contactos (RF14, 200). Cada contacto leído queda en la bitácora (RF18)
+GET {{apiUrl}}/patients/{{pacienteId}}
+Authorization: Bearer {{receptionToken}}
+
+### 7.3 Actualizar sus contactos (RF14, 200)
+PATCH {{apiUrl}}/patients/{{pacienteId}}
+Authorization: Bearer {{receptionToken}}
+Content-Type: application/json
+
+{
+  "contacts": [
+    { "type": "telefono", "value": "+506 8888 9999" }
+  ]
+}
+
+### 7.4 Historial de citas del paciente 1, con el estado de cada una (RF16, 200)
+GET {{apiUrl}}/appointments?patientId=1
+Authorization: Bearer {{receptionToken}}
+
+
+# =============================================================================
+# 8. NOTA CLÍNICA (RF15, RF18): solo la profesional que atendió la cita
+# =============================================================================
+
+### 8.1 Escribir la nota de la cita atendida en 6.14 (RF15, 201)
+# @name crearNota
+POST {{apiUrl}}/clinical-notes
+Authorization: Bearer {{professionalToken}}
+Content-Type: application/json
+
+{
+  "appointmentId": {{citaPasadaId}},
+  "text": "Dolor lumbar leve. Reposo relativo y control en dos semanas."
+}
+
+### 8.2 Abrir la nota desde la cita (RF15, 200). La lectura queda en la bitácora (RF18)
+GET {{apiUrl}}/clinical-notes?appointmentId={{citaPasadaId}}
+Authorization: Bearer {{professionalToken}}
+
+### 8.3 Corregir la nota: solo la autora, y la corrección queda en la bitácora (RF15, RF18, 200)
+PATCH {{apiUrl}}/clinical-notes/{{crearNota.response.body.$.clinicalNoteId}}
+Authorization: Bearer {{professionalToken}}
+Content-Type: application/json
+
+{
+  "text": "Dolor lumbar leve. Reposo relativo, ibuprofeno por 5 días y control en dos semanas."
+}
+
+### 8.4 [403] Recepción no puede leer notas clínicas
+GET {{apiUrl}}/clinical-notes?appointmentId={{citaPasadaId}}
+Authorization: Bearer {{receptionToken}}
+
+
+# =============================================================================
+# 9. AGENDA DEL DÍA Y REPORTES (RF20, RF21)
+# =============================================================================
+
+### 9.1 Agenda de toda la clínica en @dia, en todos los estados (RF20, 200)
+GET {{apiUrl}}/agenda?date={{dia}}
+Authorization: Bearer {{receptionToken}}
+
+### 9.2 La profesional consulta su agenda: sin professionalId recibe la suya (RF20, 200)
+GET {{apiUrl}}/agenda?date={{dia}}
+Authorization: Bearer {{professionalToken}}
+
+### 9.3 [403] La profesional pide la agenda de otro profesional: solo puede ver la suya (RF20)
+GET {{apiUrl}}/agenda?date={{dia}}&professionalId={{andres}}
+Authorization: Bearer {{professionalToken}}
+
+### 9.4 Conteo de citas por estado en un rango (RF21, 200; solo el administrador de la clínica)
+GET {{apiUrl}}/reports/appointments-by-status?from={{dia}}&to={{dia}}
+Authorization: Bearer {{adminToken}}
+
+
+# =============================================================================
+# 10. BITÁCORA (RF19) Y AUDITORÍA VERIFICABLE (MÓDULO §9)
+# =============================================================================
+
+### 10.1 La bitácora del paciente creado en 7.1: creación, lecturas y cambios de sus contactos (RF19, 200)
+GET {{apiUrl}}/audit?patientId={{pacienteId}}&limit=20
+Authorization: Bearer {{adminToken}}
+
+### 10.2 Lo que hizo la Dra. Mora, de lo más nuevo a lo más antiguo, en páginas de 5 (RF19, 200)
+# Para la página siguiente, agregar &beforeId= con el nextBeforeId de la respuesta.
+GET {{apiUrl}}/audit?userId={{laura}}&limit=5
+Authorization: Bearer {{adminToken}}
+
+### 10.3 Verificar la cadena de huellas SHA-256 de la bitácora de la clínica (§9, 200): responde "valid": true
+GET {{apiUrl}}/audit/verify
+Authorization: Bearer {{adminToken}}
+
+### 10.4 [403] Recepción no puede consultar la bitácora (RF19)
+GET {{apiUrl}}/audit
+Authorization: Bearer {{receptionToken}}
+
+
+# =============================================================================
+# 11. CASOS DE RECHAZO: 400, 401, 403 Y 404 (RF17, I3, I4, I5)
+# =============================================================================
+
+### 11.1 [401] Sin token
+GET {{apiUrl}}/users
+
+### 11.2 [401] Token con la firma adulterada
+GET {{apiUrl}}/me
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjMifQ.firma_invalida
+
+### 11.3 [403] Recepción intenta administrar usuarios (no tiene users.manage)
+GET {{apiUrl}}/users
+Authorization: Bearer {{receptionToken}}
+
+### 11.4 [403] Una profesional intenta cancelar una cita (no tiene appointments.manage)
+POST {{apiUrl}}/appointments/{{citaId}}/cancel
+Authorization: Bearer {{professionalToken}}
+Content-Type: application/json
+
+{
+  "reason": "Intento de cancelación por la profesional"
+}
+
+### 11.5 [403] El administrador de plataforma no opera agendas de clínica
+GET {{apiUrl}}/availability/professionals/{{laura}}?serviceId={{consultaGeneral}}&date={{dia}}
 Authorization: Bearer {{platformToken}}
 
-### 5.6 [400 Bad Request] Intento de enviar el fin de la cita (I4) o inyectar clinicId en el body (I5)
+### 11.6 [400] Enviar el fin de la cita (I4) o un clinicId en el cuerpo (I5): campos que no se admiten
 POST {{apiUrl}}/appointments
 Authorization: Bearer {{receptionToken}}
 Content-Type: application/json
 
 {
   "clinicId": 2,
-  "patientId": 1,
-  "professionalId": 6,
-  "serviceId": 1,
-  "start": "2026-11-16T09:00:00-06:00",
-  "end": "2026-11-16T09:30:00-06:00"
+  "patientId": 3,
+  "professionalId": {{laura}},
+  "serviceId": {{consultaGeneral}},
+  "start": "{{dia}}T10:00:00-06:00",
+  "end": "{{dia}}T10:30:00-06:00"
 }
 
-### 5.7 [400 Bad Request] Cita fuera del horario de atención del profesional (I3, código SQLSTATE MC001)
+### 11.7 [400] Cita fuera del horario de la profesional (I3, MC001)
 POST {{apiUrl}}/appointments
 Authorization: Bearer {{receptionToken}}
 Content-Type: application/json
 
 {
-  "patientId": 1,
-  "professionalId": 6,
-  "serviceId": 1,
-  "start": "2026-11-16T03:00:00-06:00"
+  "patientId": 3,
+  "professionalId": {{laura}},
+  "serviceId": {{consultaGeneral}},
+  "start": "{{dia}}T12:00:00-06:00"
 }
 
-### 5.8 [404 Not Found] Aislamiento multi-tenant (I5): recepción de Cartago intenta leer o cancelar recursos de San José
+### 11.8 [404] Recepción de Cartago intenta cancelar una cita de San José (I5): igual que si no existiera
 POST {{apiUrl}}/appointments/{{citaId}}/cancel
 Authorization: Bearer {{cartagoToken}}
 Content-Type: application/json
@@ -234,44 +545,10 @@ Content-Type: application/json
   "reason": "Intento de tocar una cita de otra clínica"
 }
 
-### 5.9 [409 Conflict] Doble reserva del mismo espacio con el mismo profesional (I1, ex_appointments_professional)
-POST {{apiUrl}}/appointments
-Authorization: Bearer {{receptionToken}}
-Content-Type: application/json
+### 11.9 [404] Recepción de Cartago intenta leer un paciente de San José (I5)
+GET {{apiUrl}}/patients/{{pacienteId}}
+Authorization: Bearer {{cartagoToken}}
 
-{
-  "patientId": 2,
-  "professionalId": 6,
-  "serviceId": 1,
-  "start": "2026-11-16T09:30:00-06:00"
-}
-
-### 5.10 [409 Conflict] Segunda reserva sobre el mismo espacio 09:30 (I1 — rechazada con 409)
-POST {{apiUrl}}/appointments
-Authorization: Bearer {{receptionToken}}
-Content-Type: application/json
-
-{
-  "patientId": 3,
-  "professionalId": 6,
-  "serviceId": 1,
-  "start": "2026-11-16T09:30:00-06:00"
-}
-
-### 5.11 [409 Conflict] Intentar modificar o volver a cancelar una cita que ya está en estado final (RF13, MC002)
-POST {{apiUrl}}/appointments/{{citaReprogramadaId}}/cancel
-Authorization: Bearer {{receptionToken}}
-Content-Type: application/json
-
-{
-  "reason": "Segundo intento de cancelación sobre una cita ya cancelada"
-}
-
-### 5.12 [409 Conflict] Intentar registrar desenlace de una cita futura antes de su hora de inicio (RF12, MC003)
-POST {{apiUrl}}/appointments/{{citaId}}/outcome
-Authorization: Bearer {{receptionToken}}
-Content-Type: application/json
-
-{
-  "outcome": "atendida"
-}
+### 11.10 [400] Un clinicId en la URL no se admite: la clínica sale siempre del token (I5)
+GET {{apiUrl}}/agenda?date={{dia}}&clinicId=1
+Authorization: Bearer {{cartagoToken}}

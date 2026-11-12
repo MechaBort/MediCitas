@@ -1,4 +1,4 @@
-// RF20: la agenda del día (de un profesional o de toda la clínica) y RF21: el conteo de citas por estado en un rango
+// RF20: la agenda del día (de un profesional o de toda la clínica; el profesional, solo la suya) y RF21: el conteo de citas por estado en un rango
 // de fechas. Las dos son de solo lectura. Las citas se crean por la API en días nuevos (freeDay), así las pruebas no
 // dependen del seed. Las que ya empezaron (atendida, ausente) se preparan en un día pasado con addAppointment, porque
 // la API no permite reservar en el pasado, y su desenlace sí se registra por la API.
@@ -122,6 +122,35 @@ test('RF20, I5: una cita de otra clínica el mismo día no aparece, y un profesi
 
   assert.equal((await agenda(reception, { date: day, professionalId: cartago.p.professionalId })).status, 404);
   assert.equal((await agenda(reception, { date: day, professionalId: 2147483647 })).status, 404);
+});
+
+test('RF20, RF17: el profesional solo consulta su propia agenda: sin professionalId recibe la suya, y con la de otro profesional 403', async () => {
+  const me = (await api('GET', '/me', { token: professional })).body.userId;
+  const mine = (await professionalsOf(db, clinicId)).find((p) => p.professionalId === me);
+  const other = [p1, p2].find((p) => p.professionalId !== me);
+  assert.ok(mine && other, 'laura.mora y otro profesional de San José con servicios');
+  const day = await freeDay(db, [mine.professionalId, other.professionalId]);
+  await schedule(mine.professionalId, day);
+  await schedule(other.professionalId, day);
+  const ofMine = await booked(mine, patients[4], day, '08:00');
+  const ofOther = await booked(other, patients[5], day, '09:00');
+
+  for (const query of [{ date: day }, { date: day, professionalId: me }]) {
+    const res = await agenda(professional, query);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.professionalId, me);
+    assert.deepEqual(res.body.appointments.map((a) => a.appointmentId), [ofMine]);
+  }
+
+  // 403 tanto para un profesional de su clínica como para uno de otra o uno inexistente: no revela si existe (I5).
+  for (const professionalId of [other.professionalId, cartago.p.professionalId, 2147483647]) {
+    const res = await agenda(professional, { date: day, professionalId });
+    assert.equal(res.status, 403, `professionalId ${professionalId}: ${JSON.stringify(res.body)}`);
+  }
+
+  // Recepción sigue viendo la agenda de toda la clínica.
+  const all = (await agenda(reception, { date: day })).body.appointments.map((a) => a.appointmentId);
+  assert.ok(all.includes(ofMine) && all.includes(ofOther), `toda la clínica: ${all}`);
 });
 
 test('RF20, RF17: recepción y el profesional consultan la agenda (200); la plataforma 403 y sin token 401', async () => {

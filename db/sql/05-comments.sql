@@ -315,7 +315,7 @@ COMMENT ON COLUMN system_errors_logs.created_at    IS 'Cuándo ocurrió el error
 COMMENT ON TRIGGER trg_appointments_10_set_period ON appointments IS
     'I4: al insertar, calcula el fin de la cita con la duración del servicio. Al actualizar, impide mover la cita o cambiarle servicio, profesional, paciente o clínica (MC004).';
 COMMENT ON TRIGGER trg_appointments_20_check_agenda ON appointments IS
-    'I3: la cita cae dentro del horario del profesional y fuera de sus bloqueos (MC001). Bloquea FOR SHARE los bloques de horario usados hasta el commit.';
+    'I3: la cita cae dentro del horario del profesional y fuera de sus bloqueos (MC001). Bloquea FOR NO KEY UPDATE los bloques de horario usados hasta el commit: nadie los recorta durante la reserva, y las reservas del mismo bloque hacen fila en vez de bloquearse en ciclo.';
 COMMENT ON TRIGGER trg_appointments_30_check_status ON appointments IS
     'RF13: toda cita nace reservada y los estados finales no admiten cambios (MC002). RF12: atendida o ausente solo después del inicio (MC003).';
 COMMENT ON TRIGGER trg_professional_schedules_guard ON professional_schedules IS

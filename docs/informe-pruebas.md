@@ -20,18 +20,24 @@ desactualizadas.
 
 ## 2. Resultado
 
-Corrida oficial del 2026-11-12 sobre `main` (`fe3b212`):
+Corrida oficial del 2026-11-12, sobre el código de la entrega (rama `cierre-entrega`, a partir de `main` `2f51daa`),
+en los dos entornos y desde cero:
 
 | Entorno | Cómo | Pruebas | Pasan | Fallan | Duración |
 |---|---|---|---|---|---|
-| Docker Compose | Clon limpio en una copia aislada, `docker compose --profile test run --build --rm tests` | 163 | **163** | 0 | 7,1 s |
-| Kubernetes (minikube) | `./k8s/deploy.sh` y después `./k8s/run-tests.sh`, dentro del clúster | 163 | **163** | 0 | 7,4 s |
+| Docker Compose | Clon limpio en una copia aislada, base nueva, `docker compose --profile test run --build --rm tests` (tres corridas seguidas) | 164 | **164** | 0 | 6,1 s |
+| Kubernetes (minikube) | `minikube delete`, `./k8s/deploy.sh` desde cero (247 s) y `./k8s/run-tests.sh`, dentro del clúster | 164 | **164** | 0 | 10,1 s |
 
-Hay 161 pruebas declaradas en 20 archivos: 3 de pruebas unitarias y 17 de integración. Se ejecutan 163, porque
+Antes de la suite, sobre la base recién creada de Compose, la colección de peticiones completa
+(`node tests/tools/correr-coleccion.mjs`) devolvió en sus 59 peticiones el código que anuncia cada una.
+
+Hay 162 pruebas declaradas en 20 archivos: 3 de pruebas unitarias y 17 de integración. Se ejecutan 164, porque
 `gateway.test.js` crea una prueba por cada servicio. **La misma suite pasa igual en los dos entornos.**
 
 Las pruebas no borran lo que crean, porque el dominio no tiene borrados físicos, así que se pueden repetir sobre la
-misma base. Cada dato que crean lleva un sufijo único, y nunca modifican los datos del seed.
+misma base. Cada dato que crean lleva un sufijo único, y nunca modifican los datos del seed. La única excepción son
+las dos pruebas del §9 que alteran y borran eslabones a propósito, como dueño de la base: lo hacen en una clínica que
+crean para eso, y al final la dejan como estaba.
 
 ## 3. Cómo están organizadas
 
@@ -55,7 +61,14 @@ libre de un profesional. Exactamente uno recibe 201, los demás reciben 409, y e
 reservada.
 - **Se comprobó que la prueba discrimina.** En una copia aislada se quitó la restricción
   `ex_appointments_professional`: la API concedió las dos reservas (`[201, 201]`) y, con diez clientes, las diez. Así
-  que la prueba falla si se quita lo que garantiza I1.
+  que la prueba falla si se quita lo que garantiza I1. Se volvió a comprobar el 2026-11-12, después del cambio de
+  abajo: sin la restricción, otra vez diez 201.
+- **Lo que encontró al repetirla muchas veces.** En el ensayo de cierre, la prueba de diez clientes falló dos veces de
+  quince: seguía habiendo una sola ganadora, pero las perdedoras recibían 500 en lugar de 409, y tardaba hasta 49 s. La
+  causa: con inserciones simultáneas, la revisión del `EXCLUDE` hace que cada una espere a las otras en curso, y las
+  diez se bloqueaban en ciclo. Se corrigió haciendo que las reservas del mismo bloque de horario hagan fila
+  (`FOR NO KEY UPDATE` en el trigger de I3) y espaciando los reintentos de `withTransaction`. Después pasó 15 de 15
+  veces, en unos 50 ms (detalle en el README, "Concurrencia y nivel de aislamiento").
 
 **La reprogramación (RF10),** en `appointment-reschedule.test.js`:
 - **una sola transacción:** la cita original pasa a "reprogramada" y la nueva se crea juntas. Si el nuevo espacio está
@@ -108,10 +121,10 @@ Generada con `node tests/tools/matriz-cobertura.mjs --write`. Hay que volver a e
 | **RF14** | Pacientes y sus datos de contacto | 5 | `patients-history.test.js` |
 | **RF15** | Nota clínica del profesional que atendió | 7 | `clinical-notes.test.js` |
 | **RF16** | Historial de citas de un paciente | 2 | `patients-history.test.js` |
-| **RF17** | Autenticación con Keycloak y matriz de permisos | 24 | `agenda-reports.test.js`, `appointment-reschedule.test.js`, `appointment-status.test.js`, `appointments.test.js`, `audit-query.test.js`, `audit-verify.test.js`, `auth.test.js`, `availability.test.js`, `clinical-notes.test.js`, `clinics.test.js`, `patients-history.test.js`, `schedules-blockades.test.js`, `services-professionals.test.js`, `users.test.js` |
+| **RF17** | Autenticación con Keycloak y matriz de permisos | 25 | `agenda-reports.test.js`, `appointment-reschedule.test.js`, `appointment-status.test.js`, `appointments.test.js`, `audit-query.test.js`, `audit-verify.test.js`, `auth.test.js`, `availability.test.js`, `clinical-notes.test.js`, `clinics.test.js`, `patients-history.test.js`, `schedules-blockades.test.js`, `services-professionals.test.js`, `users.test.js` |
 | **RF18** | Bitácora de lecturas y escrituras sensibles | 6 | `audit-query.test.js`, `clinical-notes.test.js`, `patients-history.test.js` |
 | **RF19** | Consulta de la bitácora con filtros | 8 | `audit-query.test.js` |
-| **RF20** | Agenda del día | 5 | `agenda-reports.test.js` |
+| **RF20** | Agenda del día | 6 | `agenda-reports.test.js` |
 | **RF21** | Conteo de citas por estado en un rango | 4 | `agenda-reports.test.js` |
 | **I1** | Un profesional nunca tiene dos citas vigentes solapadas | 7 | `errors.test.js`, `appointment-reschedule.test.js`, `appointments.test.js` |
 | **I2** | Un paciente nunca tiene dos citas vigentes solapadas en la clínica | 3 | `errors.test.js`, `appointment-reschedule.test.js`, `appointments.test.js` |
@@ -160,6 +173,7 @@ Generada con `node tests/tools/matriz-cobertura.mjs --write`. Hay que volver a e
 - RF20: la agenda de un profesional lista sus citas del día en orden, con estado y nombres, también las canceladas
 - RF20: la agenda de toda la clínica incluye a todos sus profesionales, ordenada por hora
 - RF20, I5: una cita de otra clínica el mismo día no aparece, y un profesional de otra clínica responde 404
+- RF20, RF17: el profesional solo consulta su propia agenda: sin professionalId recibe la suya, y con la de otro profesional 403
 - RF20, RF17: recepción y el profesional consultan la agenda (200); la plataforma 403 y sin token 401
 - RF20, I5: los parámetros se validan: sin fecha, fecha imposible, profesional no numérico o con clinicId responden 400
 - RF21, RF10, RF11, RF12: cuenta por estado las citas de un profesional en un rango de fechas
@@ -347,7 +361,7 @@ Generada con `node tests/tools/matriz-cobertura.mjs --write`. Hay que volver a e
 - I5: un clinicId en el body se rechaza con 400
 - RF2: un id de usuario que no es un número responde 400
 
-_161 pruebas declaradas en 20 archivos. Requisitos sin prueba: ninguno._
+_162 pruebas declaradas en 20 archivos. Requisitos sin prueba: ninguno._
 <!-- matriz:fin -->
 
 ## 6. Mediciones
@@ -389,8 +403,11 @@ capacidad de un clúster real.
 
 - **Las pruebas corren en paralelo** (un proceso por archivo) y comparten la base. Las que miran datos compartidos,
   como la bitácora de una clínica, filtran por lo que ellas mismas crearon o anclan sus consultas, para no depender de
-  lo que escriben las demás. Una prueba del §9 que no lo hacía fallaba de forma intermitente, y se corrigió el
-  2026-11-12.
+  lo que escriben las demás. Las que manipulan la cadena de huellas del §9 lo hacen en una clínica propia, que crean
+  por la API. El 2026-11-12, al repetir la suite más de veinte veces, aparecieron tres fallas intermitentes de este
+  tipo (la cadena del §9, la paginación de RF19 y dos archivos que recibían el mismo día), y se corrigieron; el
+  detalle está en `docs/diseno-servicios.md`, sección 9. Después, la suite pasó todas las corridas seguidas, también
+  sobre una base que acumulaba las anteriores.
 - **La prueba de carga no es parte de `npm test`:** es una medición, no una aserción, y tarda minutos. Se corre aparte
   con k6.
 - **La caída de Redis se comprobó a mano,** deteniendo Redis en una copia aislada: RF7 respondió 200 con

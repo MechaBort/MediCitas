@@ -37,7 +37,14 @@ export function servedDbRoles() {
 }
 
 const DEADLOCK = '40P01';
-const MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = 5;
+
+// Espera antes de repetir una transacción abortada por deadlock: un tiempo al azar entre 0 y 20 ms × 2^intento
+// (hasta 40, 80, 160 y 320 ms). Si las abortadas se repitieran de inmediato, volverían a chocar entre sí al mismo
+// tiempo: con diez reservas simultáneas al mismo espacio se agotaban los intentos y la API respondía 500 en lugar de
+// 409. Al repartirlas en el tiempo, cada repetición encuentra a la ganadora ya confirmada y recibe el 23P01 de la
+// restricción EXCLUDE.
+const backoff = (attempt) => new Promise((resolve) => setTimeout(resolve, Math.random() * 20 * 2 ** attempt));
 
 // Ejecuta fn(client) dentro de una transacción con el rol de base indicado y devuelve
 // lo que fn devuelva. Si fn lanza un error, se hace ROLLBACK y el error sigue hacia arriba.
@@ -46,8 +53,10 @@ const MAX_ATTEMPTS = 3;
 //   valor por omisión (ver "Concurrencia y nivel de aislamiento" en el README).
 // - SET LOCAL ROLE dura solo hasta el COMMIT o ROLLBACK: la conexión vuelve al pool como
 //   el usuario del servicio, sin permisos, y la siguiente petición no hereda el rol de esta.
-// - Si Postgres aborta la transacción por un deadlock, se repite completa. Por eso fn no
-//   debe tener efectos fuera de la base (invalidar la caché, por ejemplo, va después).
+// - Si Postgres aborta la transacción por un deadlock, se repite completa, hasta 5 intentos y con una espera al azar
+//   entre uno y otro. Por eso fn no debe tener efectos fuera de la base (invalidar la caché, por ejemplo, va después).
+//   Los deadlocks aparecen sobre todo al revisar las restricciones EXCLUDE con inserciones simultáneas: cada una
+//   inserta su fila en el índice y espera a las otras que siguen en curso, y dos que se esperan entre sí se bloquean.
 export async function withTransaction(dbRole, fn) {
   if (!DB_ROLES.has(dbRole)) {
     throw new Error(`Rol de base de datos no permitido: ${dbRole}`);
@@ -70,6 +79,7 @@ export async function withTransaction(dbRole, fn) {
 
       if (err.code === DEADLOCK && attempt < MAX_ATTEMPTS) {
         console.warn(`Deadlock detectado; reintento ${attempt + 1} de ${MAX_ATTEMPTS}`);
+        await backoff(attempt);
         continue;
       }
       throw err;

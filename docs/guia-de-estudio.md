@@ -172,10 +172,10 @@ El diagrama está en `docs/diagramas.md`, sección 1.
    no atiende ese rol, responde 403 ahí mismo (sección 3.5). Después abre una transacción, hace `SET LOCAL ROLE` al
    rol de base de datos que corresponde y ejecuta el SQL filtrando por esa clínica (`withTransaction`, en
    `packages/common/src/db.js`).
-5. Para la disponibilidad (RF7) consulta primero Redis; si no está, calcula en Postgres y guarda el resultado.
-   **Pendiente.**
+5. Para la disponibilidad (RF7) consulta primero Redis; si no está, calcula en Postgres y guarda el resultado
+   (`services/agenda/src/availability-cache.js`).
 
-Los pasos 1 a 4 ya funcionan; el 5 llega con la ruta de disponibilidad.
+Los cinco pasos funcionan, en Compose y en Kubernetes.
 
 ### 2.3 Decisiones del `docker-compose.yml` 🟡
 
@@ -359,13 +359,15 @@ Hay dos sistemas de permisos y es fácil confundirlos:
 | | Permisos del dominio | Permisos de la base |
 |---|---|---|
 | Dónde están | tablas `permissions` y `permissions_per_roles` (`db/sql/03-catalogs.sql`) | `GRANT` en `db/sql/02-grants.sql` |
-| Quién los aplica | la API, antes de tocar la base (**pendiente**) | el motor |
+| Quién los aplica | la API, antes de tocar la base (`requirePermission`) | el motor |
 | Granularidad | por operación (`appointments.manage`) | por tabla y columna |
 | Si fallan | la API responde **403** | error `42501` (permission denied) |
 | Para qué | cumplir la matriz de RF17 con respuestas claras | defensa en profundidad: aunque la API tenga un error, recepción no lee notas clínicas |
 
-**Pendiente de decidir por el grupo:** la matriz del enunciado no menciona RF20 (agenda del día) ni RF21 (conteo
-por estado). Se propuso `agenda.read` para admin, recepción y profesional, y `reports.read` solo para el admin.
+**Ampliación del grupo a la matriz:** el enunciado no menciona RF20 (agenda del día) ni RF21 (conteo por estado) en
+la matriz. Quedó así: `agenda.read` para el administrador y recepción (toda la clínica), `agenda.read_own` para el
+profesional (solo la suya, porque el §2 dice que "consulta su propia agenda") y `reports.read` solo para el
+administrador.
 
 ### 3.5 Un usuario por servicio 🔴
 
@@ -590,9 +592,10 @@ tabla de clínica lleva `clinic_id`. El README compara esta estrategia con "un e
 termine apuntando a un dato de otra. Hay tres capas de protección:
 
 1. **El `clinic_id` sale del token, nunca de la petición.** La API toma la clínica de `users` a partir del `sub`
-   del token. Aunque alguien mande `clinic_id=2` en la URL, se usa la suya. **Pendiente** (API).
-2. **FKs compuestas.** Es la parte que ya existe y se explica abajo.
-3. **Pruebas automatizadas de fuga** que intentan leer datos de otra clínica. **Pendiente.**
+   del token. Aunque alguien mande `clinic_id=2` en la URL, se usa la suya, y un `clinicId` en el cuerpo responde
+   400 (los esquemas de zod usan `.strict()`).
+2. **FKs compuestas,** que se explican abajo.
+3. **Pruebas automatizadas de fuga** que intentan leer datos de otra clínica (`tenant-isolation.test.js`).
 
 #### Tres conceptos de base
 
@@ -778,8 +781,9 @@ profesional y del servicio, y rechazaría la fila si alguna no coincide.
   el final es inválido.
 - **Con la FK no pasa.** En el momento 2, la verificación de la FK le pone un **candado** a la fila de Laura en
   `users` ("alguien me apunta, no cambies mi llave"). En el momento 4, B tiene que **esperar** a que A termine;
-  cuando A confirma, el motor revisa de nuevo y rechaza a B. Un trigger puede imitar el candado con `FOR SHARE` (lo
-  hace `appointments_check_agenda`), pero hay que acordarse y hacerlo bien; la FK lo trae incluido.
+  cuando A confirma, el motor revisa de nuevo y rechaza a B. Un trigger puede imitar el candado con un bloqueo de
+  filas (lo hace `appointments_check_agenda`, con `FOR NO KEY UPDATE`), pero hay que acordarse y hacerlo bien; la
+  FK lo trae incluido.
 - **Veredicto:** los triggers son para reglas que una FK **no puede** expresar, como "la cita cae dentro del horario"
   (ahí sí usamos uno). Para "misma clínica", la FK alcanza y es más segura.
 
@@ -1175,15 +1179,28 @@ Al insertar una cita, revisa dos cosas:
 
 Dos detalles avanzados 🟡:
 
-- **`FOR SHARE`.** Sin él podría ocurrir esta carrera: recepción reserva a las 9:00 mientras el administrador borra
-  el bloque de 8 a 12. El trigger de la reserva ve el bloque y acepta; el administrador no ve la cita (todavía no
-  está confirmada) y borra. Ambos confirman y queda una cita fuera de horario. Con `FOR SHARE`, la reserva "sujeta"
-  los bloques que usa hasta su `COMMIT`. El borrado tiene que esperar, y cuando por fin corre, su trigger
-  (`professional_schedules_guard`) ya ve la cita confirmada y lo rechaza con `MC006`. Esto se probó con dos
-  sesiones simultáneas: el borrado esperó 3 segundos y luego falló.
-- **`SECURITY DEFINER`.** `FOR SHARE` exige permiso de `UPDATE` sobre `professional_schedules`, que recepción no
+- **El bloqueo de los bloques de horario (`FOR NO KEY UPDATE`).** Cumple dos funciones:
+  1. **Que nadie borre el bloque a mitad de la reserva.** Sin el bloqueo podría ocurrir esta carrera: recepción
+     reserva a las 9:00 mientras el administrador borra el bloque de 8 a 12. El trigger de la reserva ve el bloque y
+     acepta; el administrador no ve la cita (todavía no está confirmada) y borra. Ambos confirman y queda una cita
+     fuera de horario. Con el bloqueo, la reserva "sujeta" los bloques que usa hasta su `COMMIT`. El borrado tiene que
+     esperar, y cuando por fin corre, su trigger (`professional_schedules_guard`) ya ve la cita confirmada y lo
+     rechaza con `MC006`. Esto se probó con dos sesiones simultáneas: el borrado esperó 3 segundos y luego falló.
+  2. **Que las reservas del mismo bloque hagan fila** (cambio del 2026-11-12). Antes el bloqueo era `FOR SHARE`, que
+     no hace esperar a otra reserva. El problema apareció al repetir muchas veces la prueba de diez clientes: la
+     restricción `EXCLUDE` hace que cada inserción espere a las otras que siguen en curso, así que las diez se
+     esperaban en ciclo. PostgreSQL rompía los ciclos abortando una por segundo (`deadlock_timeout`), se agotaban los
+     reintentos y algunas respondían 500. Con `FOR NO KEY UPDATE`, la segunda reserva espera a que la primera
+     confirme y entonces encuentra a la ganadora: 409 de inmediato. La prueba bajó de varios segundos a unos 50 ms.
+     - **El candado solo ordena; no garantiza.** Si se quita el `EXCLUDE`, las diez reservas ganan (se comprobó). La
+       garantía sigue siendo la restricción.
+     - **El costo:** dos reservas del mismo profesional en el mismo bloque, aunque no se solapen, van una después de
+       la otra, por unos milisegundos.
+     - **Por qué `NO KEY`:** `FOR UPDATE` también bloquearía las revisiones de las FKs que apuntan al bloque, que no
+       hace falta; `FOR NO KEY UPDATE` choca con otras reservas y con los cambios al bloque, que es lo que se busca.
+- **`SECURITY DEFINER`.** `FOR NO KEY UPDATE` exige permiso de `UPDATE` sobre `professional_schedules`, que recepción no
   tiene. `SECURITY DEFINER` hace que la función corra con los permisos de su dueño (`mc_owner`). Como eso es
-  poderoso, se le fija `SET search_path = public, pg_temp`: así nadie puede engañarla creando un objeto con el mismo
+  poderoso, se le fija `SET search_path = admin, agenda, clinical, pg_temp`: así nadie puede engañarla creando un objeto con el mismo
   nombre en otro esquema.
 
 #### `trg_appointments_30_check_status`: RF13 y RF12 🔴 (`:588`)
@@ -1342,8 +1359,8 @@ ROLLBACK;
 - **`clinical_notes`** (RF15) es el dato más sensible. Hay una nota por cita (`UNIQUE (appointment_id)`). **No
   guarda quién la escribió**: por definición es el profesional de la cita (`appointments.professional_id`).
   Guardarlo dos veces crearía dos copias del mismo hecho que podrían dejar de coincidir. La regla "solo la escribe
-  el profesional que atendió" la aplicará la API (**pendiente**); la base garantiza que solo un profesional puede
-  escribir notas.
+  el profesional que atendió" la aplica la API (`services/clinical/src/routes/clinical-notes.js`); la base
+  garantiza que solo un profesional puede escribir notas.
 - **`audit_logs`** (RF18, RF19) responde: **quién** (`user_id`), **qué hizo** (`event_type_id`: lectura,
   creación…), **sobre qué tipo de dato** (`data_object_id`: nota o contacto), **sobre cuál registro**
   (`object_id`), **de cuál paciente** (`patient_id`) y **cuándo** (`created_at`).
@@ -1351,7 +1368,8 @@ ROLLBACK;
   a un contacto). Es un compromiso: se pierde la verificación del motor sobre ese id, a cambio de una sola bitácora
   para todos los tipos de dato.
 - **Ojo:** la base **protege** la bitácora, pero **escribir** una entrada en cada lectura o escritura de un dato
-  sensible es trabajo de la API (**pendiente**). Los datos de demostración ya traen una bitácora simulada.
+  sensible es trabajo de la API, en la misma transacción (`services/clinical/src/audit.js`). Los datos de
+  demostración ya traen una bitácora simulada.
 
 ### 4.9 Índices y planes `EXPLAIN ANALYZE` 🟡
 
@@ -1397,7 +1415,7 @@ esquema está en 3FN, con cuatro desnormalizaciones deliberadas y justificadas:
 4.4. Un paciente tiene una cita a las 9:00 con Laura. Recepción le reserva otra a las 9:00 con Andrés, que tiene
 horario libre. ¿Qué pasa?
 4.5. ¿Por qué `(clinic_id, patient_id)` y no solo `patient_id` en la FK de `patient_contacts`?
-4.6. ¿Para qué sirve `FOR SHARE` en `appointments_check_agenda`?
+4.6. ¿Para qué sirve el `FOR NO KEY UPDATE` de `appointments_check_agenda`?
 4.7. ¿Por qué hacen falta dos capas para proteger la bitácora?
 4.8. Si `user_id` ya es la llave primaria, ¿para qué existe `UNIQUE (clinic_id, user_id)`?
 4.9. En `professionals`, ¿qué pieza impide que Pablo entre escribiendo `role_id = 3`? ¿Y qué impide cambiarle el
@@ -1554,13 +1572,13 @@ JSON (que se vuelve el `sub` del token) es el mismo `keycloak_sub` de `users` en
 token.sub  →  users.keycloak_sub  →  users.clinic_id y users.role_id
 ```
 
-### 6.3 Lo que hará la API con el token (pendiente) 🔴
+### 6.3 Lo que hace la API con el token 🔴
 
 1. Sin token, o con firma inválida, vencido, con otro `iss` u otro `aud` → **401**.
 2. Buscar `sub` en `users`. Si no existe (`sinregistro`) o está inactivo (`exrecepcion.sanjose`) → **403**.
-3. **Decisión del grupo pendiente:** el rol vive en dos lugares, el token y `users.role_id`. ¿Qué pasa si no
-   coinciden? Es exactamente lo que pregunta el enunciado ("dos copias del mismo hecho"). Propuesta: 403 y
-   documentarlo.
+3. El rol vive en dos lugares, el token y `users.role_id`. ¿Qué pasa si no coinciden? Es exactamente lo que
+   pregunta el enunciado ("dos copias del mismo hecho"). **Decidido:** 403 (`identify`, en
+   `packages/common/src/auth.js`).
 4. Traducir el rol a permisos del dominio; si no tiene el permiso de la operación → **403**.
 
 ### Experimentos
@@ -1697,8 +1715,9 @@ gateway/nginx.conf        el reparto de rutas
     etc., que define el compose.
   - `withTransaction(rol, fn)` abre la transacción con `READ COMMITTED` explícito y hace `SET LOCAL ROLE` a un rol
     de una lista fija, nunca a texto del cliente. Ejecuta `fn` y hace `COMMIT`.
-  - Ante un deadlock (`40P01`), repite la transacción completa, hasta 3 veces. Por eso dentro de `fn` solo va
-    trabajo sobre la base: Redis y Keycloak van después.
+  - Ante un deadlock (`40P01`), repite la transacción completa, hasta 5 veces, con una espera al azar que crece en
+    cada intento (hasta 40, 80, 160 y 320 ms). Sin la espera, las transacciones abortadas se repetían al mismo tiempo
+    y volvían a chocar. Por eso dentro de `fn` solo va trabajo sobre la base: Redis y Keycloak van después.
   - `servedDbRoles()` le pregunta a la base qué perfiles atiende el servicio (sección 3.5).
 - **`errors.js`.**
   - `HttpError` es un error con código HTTP.
@@ -1829,7 +1848,7 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   - **La prueba discrimina.** Se comprobó en una copia aislada con el reintento apagado (`MAX_ATTEMPTS = 1`, solo
     dentro del contenedor): la transacción abortada respondió 500 "Error interno". Con el reintento, siempre 409.
   - Los registros lo confirman: PostgreSQL anota `deadlock detected ... while checking exclusion constraint`, y
-    `agenda`, "Deadlock detectado; reintento 2 de 3".
+    `agenda`, "Deadlock detectado; reintento 2 de 5".
 - **Después del COMMIT se suben dos versiones de agenda:** la del día que se libera y la del día que se ocupa, que
   pueden ser de dos profesionales distintos (I8).
 
@@ -1911,7 +1930,10 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
     Cada una trae los nombres del paciente, el profesional y el servicio.
   - Incluye las canceladas para que recepción vea todo lo que pasó en el día.
   - No lee los contactos del paciente: esos sí tendrían que registrarse en la bitácora (RF18).
-  - El profesional también ve la agenda de toda la clínica, porque la matriz no le da la variante "solo lo propio".
+  - **El profesional solo ve su propia agenda** (cambio del 2026-11-12). Tiene el permiso `agenda.read_own` en lugar
+    de `agenda.read`: sin `professionalId` recibe la suya, y con el de otro profesional recibe 403. El 403 se decide
+    comparando con el `userId` del token, sin consultar la base, así que no revela si el otro profesional existe ni
+    de qué clínica es. Lo pide el §2 del enunciado ("consulta su propia agenda") y es menor privilegio.
 - **RF21: `GET /reports/appointments-by-status?from=…&to=…`**, con un `professionalId` opcional y el permiso
   `reports.read`, que solo tiene el administrador.
   - Es un `COUNT` agrupado por estado. Parte del catálogo de estados con un `LEFT JOIN`, para que los estados sin
@@ -1926,9 +1948,9 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
 - **La condición que permite usar el índice.** Los dos índices son sobre la expresión `lower(period)`, y la consulta
   filtra con esa misma expresión: `lower(a.period) >= inicio del día AND lower(a.period) < inicio del día siguiente`.
   Un índice sobre una expresión solo se usa si la consulta escribe la misma expresión.
-- **Las pruebas (`tests/integration/agenda-reports.test.js`, 9).**
-  - RF20: el orden, los estados y los nombres; toda la clínica; I5 (una cita de Cartago no aparece y su
-    profesional responde 404); permisos y validación.
+- **Las pruebas (`tests/integration/agenda-reports.test.js`, 10).**
+  - RF20: el orden, los estados y los nombres; toda la clínica; que el profesional solo ve la suya (403 con la de
+    otro); I5 (una cita de Cartago no aparece y su profesional responde 404); permisos y validación.
   - RF21: los conteos exactos de un profesional. En un día futuro hay una cancelada, una reprogramada y dos
     reservadas, una de ellas la nueva de la reprogramación. En un día pasado, una atendida y una ausente.
   - RF21 también prueba los cinco estados con cero, el tope de 366 días y que solo el administrador puede contar.
@@ -2109,18 +2131,25 @@ kubectl -n medicitas top pods             # la CPU de cada pod (metrics-server)
 | RF20 | Agenda del día | ✔ índices `ix_appointments_clinic_start` e `ix_appointments_prof_start` | ✔ `GET /agenda?date=…` (servicio `agenda`), con pruebas |
 | RF21 | Conteo por estado | ✔ consulta (E23) | ✔ `GET /reports/appointments-by-status`, hasta 366 días, con pruebas |
 
-**Otros entregables:** pruebas automatizadas ◐: el arnés (`npm test`) y las pruebas de RF1, RF2, RF17, la
-traducción de errores, el gateway y la fuga en `/users` están hechas (etapa 6); faltan carrera, fugas del resto de
-recursos y una por invariante, que llegan con las rutas del bloque B ·
-`EXPLAIN ANALYZE` de los índices ✘ · contrato de rutas en el README ✘ · reporte de pruebas ✘ · colección de
-peticiones ✘ · video ✘ · `Uso_de_IA.md` actualizado ✘.
+**Otros entregables** (al 2026-11-12):
+- **Pruebas automatizadas ✔:** 164 pruebas, unitarias y de integración, que pasan con un solo comando en Compose
+  (`docker compose --profile test run --rm tests`) y en Kubernetes (`./k8s/run-tests.sh`). Hay al menos una por
+  invariante, y la carrera, la fuga entre clínicas y el deadlock tienen las suyas.
+- **`EXPLAIN ANALYZE` de los índices ✔:** en el README, "Justificación con `EXPLAIN ANALYZE`".
+- **Contrato de las rutas en el README ✔.**
+- **Informe de pruebas ✔:** `docs/informe-pruebas.md`, con la matriz de cobertura generada desde los nombres de las
+  pruebas.
+- **Documento de diseño ✔:** `docs/diseno.md`, que reúne el modelo, el multi-tenancy y el aislamiento.
+- **Colección de peticiones ✔:** `requests/medicitas.http`.
+- **`Uso_de_IA.md` ◐:** falta la sección de Emmanuel.
+- **Video ✘.**
 
 **Requisitos del profesor fuera de la rúbrica:**
-- **Separación en servicios ◐:**
-  - hechos los workspaces, los schemas y los usuarios por servicio;
-  - desde la etapa 5 existen `agenda`, `clinical` y el gateway, todavía sin las rutas de citas y pacientes.
-- **Kubernetes ✘.**
-- **Módulo del §9:** ✘ sin elegir.
+- **Separación en servicios ✔:** `admin`, `agenda` y `clinical`, detrás del gateway, cada uno con su usuario de base.
+- **Kubernetes ✔:** pasos 1 a 3 (CloudNativePG con PgBouncer; servicios, gateway, Keycloak y Redis; HPA de `agenda`).
+  El paso 4, la réplica con failover, se descartó a propósito: un segundo PostgreSQL encendido que solo sirve si el
+  primero se cae no compensa en esta etapa.
+- **Módulo del §9 ✔:** auditoría verificable, con la cadena de huellas SHA-256 y `GET /audit/verify`.
 
 ---
 
@@ -2135,10 +2164,14 @@ dos insertan. Solo el motor ve todas las transacciones a la vez; la restricción
 y falle.
 </details>
 
-<details><summary><b>1.2</b> ¿Qué invariantes dependen todavía de código que no existe?</summary>
+<details><summary><b>1.2</b> ¿Qué invariantes no garantiza la base por sí sola, sino junto con la API?</summary>
 
-I8 completo (la caché) y una parte de I5: que el `clinic_id` salga del token y no de la petición. Las FKs
-compuestas ya funcionan, pero no impiden que una consulta mal escrita *lea* datos de otra clínica.
+I8 y una parte de I5.
+- **I8:** la base no sabe que existe Redis. La API debe llamar a `bumpAgendaVersion` después de cada COMMIT que
+  cambie una agenda; si una ruta lo olvida, la caché miente hasta que vence la copia (60 s).
+- **I5:** las FKs compuestas impiden que una fila *apunte* a otra clínica, pero no que una consulta mal escrita *lea*
+  datos de otra. Eso lo cubre la API: el `clinic_id` sale siempre del token y toda consulta filtra por él. Las
+  pruebas de fuga (`tenant-isolation.test.js`) lo comprueban.
 </details>
 
 <details><summary><b>2.1</b> ¿Por qué la app no arranca hasta que Keycloak está sano?</summary>
@@ -2238,10 +2271,13 @@ Porque `patient_id` solo garantiza que el paciente existe, no que sea de la mism
 dos cosas, así que un contacto de San José no puede apuntar a un paciente de Cartago (I5).
 </details>
 
-<details><summary><b>4.6</b> ¿Para qué sirve FOR SHARE en appointments_check_agenda?</summary>
+<details><summary><b>4.6</b> ¿Para qué sirve el FOR NO KEY UPDATE de appointments_check_agenda?</summary>
 
-Para que nadie borre o recorte el bloque de horario mientras la reserva no confirma. Sin él, una reserva y el
-borrado de su bloque podrían confirmarse a la vez y dejar una cita fuera de horario (I3).
+Para dos cosas. Primero, que nadie borre o recorte el bloque de horario mientras la reserva no confirma: sin él, una
+reserva y el borrado de su bloque podrían confirmarse a la vez y dejar una cita fuera de horario (I3). Segundo, que
+las reservas del mismo bloque hagan fila: así cada una encuentra a la ganadora ya confirmada y recibe 409, en vez de
+esperarse en ciclo dentro de la revisión del `EXCLUDE` y terminar en deadlock. La garantía de una sola ganadora sigue
+siendo el `EXCLUDE`.
 </details>
 
 <details><summary><b>4.7</b> ¿Por qué dos capas para proteger la bitácora?</summary>
@@ -2334,7 +2370,7 @@ token emitido para otra aplicación del mismo Keycloak no sirva contra la nuestr
 | `search_path` | Lista de esquemas donde Postgres busca los nombres de tablas y funciones |
 | Schema | "Carpeta" dentro de una base. Aquí hay uno por servicio (`admin`, `agenda`, `clinical`), no uno por clínica |
 | `USAGE` (sobre un schema) | Permiso para entrar a un schema; sin él, sus tablas no se ven aunque se tenga permiso sobre ellas |
-| `FOR SHARE` | Bloqueo de filas que impide modificarlas o borrarlas hasta que termine la transacción |
+| `FOR SHARE` / `FOR NO KEY UPDATE` | Bloqueos de filas hasta que termine la transacción. `FOR SHARE` impide modificarlas o borrarlas, pero varias transacciones lo pueden tener a la vez; `FOR NO KEY UPDATE` además hace esperar a otra que pida lo mismo |
 | Nivel de aislamiento | Qué ve una transacción de las demás; Postgres usa `READ COMMITTED` por defecto |
 | Deadlock | Dos transacciones que se esperan mutuamente; Postgres aborta una (`40P01`) |
 | Rol de base de datos | Usuario o grupo de permisos en Postgres |
