@@ -46,6 +46,7 @@ Docker y a minikube.
 - Diseño e implementación asistida del paso 1 de Kubernetes (`k8s/`): PostgreSQL con el operador CloudNativePG, su inicialización con el mismo `db/init/00-init.sh` de Compose en un Job, y PgBouncer en modo transacción, más el script de despliegue `k8s/deploy.sh`. También se corrigió una prueba del §9 que fallaba de forma intermitente al correr en paralelo con otras.
 - Diseño e implementación asistida del paso 2 de Kubernetes: Deployments y Services de `admin`, `agenda`, `clinical`, el gateway, Keycloak y Redis; imágenes construidas dentro de minikube; un Secret por componente; y `k8s/run-tests.sh`, que corre la suite completa dentro del clúster.
 - Diseño e implementación asistida del paso 3 de Kubernetes: `metrics-server`, el HPA de `agenda` (entre 2 y 6 copias según la CPU) y `k8s/load-test.sh`, que corre la prueba de carga de RF7 dentro del clúster y registra cómo escala `agenda`.
+- Diseño e implementación asistida del paso 4 de Kubernetes: una base secundaria con replicación síncrona y failover automático (`instances: 2` en el Cluster), la respuesta 503 cuando la base no está disponible (`isDatabaseUnavailable` en `packages/common/src/errors.js`), dos parámetros de PgBouncer que acortan la recuperación, y `k8s/failover-test.sh`, que simula la caída de la principal y comprueba que no se pierde ninguna escritura confirmada. Claude escribió todo el código y las mediciones; Sebastián tomó las decisiones de diseño.
 - Restricción de la agenda del día (`RF20`) para que el profesional solo vea la suya, con el permiso nuevo `agenda.read_own` y su prueba.
 - Generación asistida del informe de pruebas (`docs/informe-pruebas.md`), con una matriz de cobertura que se genera desde los nombres de las pruebas (`tests/tools/matriz-cobertura.mjs`), y del documento de diseño (`docs/diseno.md`), que reúne el modelo, el multi-tenancy y el aislamiento.
 - Completar la colección de peticiones (`requests/medicitas.http`) con las rutas que faltaban, y `tests/tools/correr-coleccion.mjs`, que la ejecuta desde la terminal y compara cada respuesta con el código esperado.
@@ -114,8 +115,17 @@ que la propuesta no cubría.
   casos extremos: dos escrituras simultáneas que invalidan a la vez, y la posible estampida de consultas a la base.
 - **Los `CONNECTION LIMIT`.** Cuestionó que un tope de conexiones contradijera la meta de 200 000 peticiones por
   minuto, y antepuso la escala. Así quedaron los topes calculados con una regla explícita, con PgBouncer delante.
-- **Kubernetes sin el paso 4.** Descartó la réplica con failover al cuestionar su costo: un segundo PostgreSQL
-  encendido que solo sirve si el primero se cae.
+- **El paso 4 de Kubernetes, primero descartado y después retomado.** Al principio descartó la réplica con failover
+  al cuestionar su costo: un segundo PostgreSQL encendido que solo sirve si el primero se cae. El 2026-11-12 la retomó
+  como una base secundaria que solo espera, para que el sistema sobreviva a la caída de la principal. Pidió discutir
+  antes cada decisión, y eligió entre las opciones que presentó la IA:
+  - **solo en Kubernetes**, y no en Compose;
+  - **replicación síncrona** (`preferred`) en lugar de la consistencia eventual que había planteado, después de que la
+    IA le mostró que con la asíncrona se puede perder una reserva ya confirmada;
+  - **503 sin reintentos** durante el corte, por el riesgo del commit ambiguo;
+  - documentar como límite conocido que Keycloak tarda en recuperarse, en lugar de cambiar su configuración cerca del
+    congelamiento;
+  - y probar los dos parámetros de PgBouncer con una medición antes de adoptarlos.
 - **El cierre.** Integrar él las ramas de Fabricio, con un PR por rama, en vez de esperar. Las notas clínicas se
   pueden corregir con un `PATCH` que queda en la bitácora. Primero los requisitos funcionales y después Kubernetes. El
   profesional solo ve su propia agenda (RF20), como dice el §2 del enunciado.
@@ -154,7 +164,7 @@ que la propuesta no cubría.
 
 ## 4. Qué se verificó de forma manual
 
-Además de la suite automática (164 pruebas, que pasan en Compose y en Kubernetes), se comprobó a mano, ejecutando y
+Además de la suite automática (166 pruebas, que pasan en Compose y en Kubernetes), se comprobó a mano, ejecutando y
 revisando la salida:
 
 - **El arranque desde un clon limpio**, con `cp .env.example .env` y `docker compose up`, sin pasos manuales.
@@ -176,6 +186,11 @@ revisando la salida:
   subiendo de 2 a 6 copias y volviendo a bajar.
 - **Kubernetes:** que una copia de `agenda` borrada se recrea sola, y que el gateway reparte por prefijo
   (`X-MediCitas-Service`).
+- **El failover (paso 4):** con `k8s/failover-test.sh`, seis veces, borrando de golpe el pod de la principal. En todas
+  se perdieron cero escrituras confirmadas y la API nunca respondió 500. En Compose, con la base detenida, los tres
+  servicios respondieron 503 y volvieron solos al encenderla. Las mediciones encontraron dos cosas que se corrigieron
+  o documentaron: PgBouncer tardaba ~13 s de más en volver (se corrigió con `server_login_retry`) y Keycloak tarda en
+  recuperarse (límite conocido). También se encontraron y corrigieron tres errores del propio script de medición.
 - **RF20:** con tokens reales, el profesional recibe solo su agenda, y 403 al pedir la de otro.
 - **La colección completa** (59 peticiones) sobre una base recién creada: cada respuesta tuvo el código esperado.
 - **La estabilidad de la suite:** se repitió más de veinte veces seguidas, y la prueba de diez clientes, quince veces

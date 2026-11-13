@@ -52,6 +52,7 @@ Los manifiestos están en `k8s/`, numerados en el orden en que se aplican. Las d
 | 1 | PostgreSQL 18 con el operador CloudNativePG (`Cluster`), su inicialización con el mismo `db/init/00-init.sh` de Compose (Job `db-init`) y PgBouncer en modo transacción (`Pooler`) | Hecho |
 | 2 | Los servicios `admin`, `agenda` y `clinical`, el gateway, Keycloak y Redis, con las imágenes construidas dentro de minikube y un Secret por componente | Hecho |
 | 3 | `metrics-server` y el HPA de `agenda` (entre 2 y 6 copias según la CPU), con un PgBouncer propio para `agenda` | Hecho |
+| 4 | Una base secundaria con replicación síncrona y failover automático: si la principal cae, el operador promueve la secundaria. La secundaria no atiende lecturas | Hecho |
 
 Para usar la API desde esta máquina, se abren los puertos en otra terminal. Son los mismos que usa Compose, así que
 **no puede estar Compose arriba a la vez**:
@@ -80,6 +81,22 @@ kubectl -n medicitas get hpa agenda -w   # en otra terminal, en vivo
 
 Los resultados y por qué `agenda` tiene su propio PgBouncer están en
 [docs/diseno-servicios.md](docs/diseno-servicios.md), sección 7, "Decisiones del paso 3".
+
+Para ver el **failover** de la base: el script simula la caída de la principal (borra su pod con 1 s de gracia),
+mide cuánto tarda el operador en promover la secundaria y cuánto la API y el inicio de sesión en volver, comprueba
+que no se perdió ninguna escritura confirmada y corre la suite contra la nueva principal. Usa los puertos 13000 y
+18080, así que no choca con Compose.
+
+```bash
+./k8s/failover-test.sh                   # SKIP_TESTS=1 para no correr la suite al final
+kubectl -n medicitas get cluster medicitas-db   # la principal actual y las instancias listas
+```
+
+En las mediciones del 2026-11-12, la promoción tardó ~20 s, se perdieron **cero** escrituras confirmadas, y durante el
+corte la API respondió 503 ("la base no está disponible por un momento"), nunca 500. Durante los primeros ~30 s,
+algunos inicios de sesión en Keycloak fallan; las sesiones abiertas siguen funcionando. Las decisiones (por qué
+síncrona, por qué 503 sin reintentos y por qué no es un respaldo) están en
+[docs/diseno-servicios.md](docs/diseno-servicios.md), sección 7, "Decisiones del paso 4".
 
 Para revisar el paso 1:
 
@@ -1117,6 +1134,12 @@ ejemplo, mandar `clinicId`: la clínica siempre sale del token).
 
 Códigos comunes a todas las rutas protegidas: 401 sin token válido, 403 sin el permiso, 400 si el body o los
 parámetros no son válidos o el JSON está mal formado.
+
+Cualquier ruta puede responder **503** `{"error":"La base de datos no está disponible por un momento; reintente en
+unos segundos"}` si la conexión con la base se cayó o la base está arrancando, apagándose o cambiando de principal
+(el failover de Kubernetes). La API no reintenta por su cuenta: si la conexión se cayó durante el COMMIT, no sabe si la
+operación quedó guardada. Por eso, ante un 503 en una escritura (una reserva, por ejemplo), conviene consultar antes de
+repetirla.
 
 - **Colección de peticiones versionada (§5 del enunciado):** `requests/medicitas.http`, en el formato de REST Client
   (VS Code). Cubre todas las rutas (RF1–RF21 y el §9) como un recorrido que se corre en orden sobre una base recién

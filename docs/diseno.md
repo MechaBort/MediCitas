@@ -29,7 +29,7 @@ bloqueos y citas **en una misma transacción**, y las FKs compuestas, que proteg
   - la escala hacia 200 000 peticiones por minuto;
   - la caché;
   - las pruebas;
-  - Kubernetes con CloudNativePG, PgBouncer y el HPA.
+  - Kubernetes con CloudNativePG, PgBouncer, el HPA y una base secundaria síncrona con failover automático.
 - Los diagramas de arquitectura están en [diagramas.md](diagramas.md), sección 1.
 
 ## 2. Modelo entidad-relación
