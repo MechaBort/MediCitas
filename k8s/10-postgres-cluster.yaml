@@ -3,7 +3,7 @@
 # Un Cluster no es un contenedor: es una declaración de lo que se quiere. El operador crea el pod de PostgreSQL, su
 # disco (un PersistentVolumeClaim) y tres Services para conectarse:
 #   - medicitas-db-rw: siempre la instancia principal (lecturas y escrituras);
-#   - medicitas-db-ro y medicitas-db-r: réplicas, que en el paso 4 (instances: 2) sirven a RF19 y RF21.
+#   - medicitas-db-ro y medicitas-db-r: las réplicas. Hoy nadie las usa: la secundaria solo espera (paso 4).
 # Si el pod se cae, el operador lo vuelve a levantar con el mismo disco.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
@@ -11,8 +11,21 @@ metadata:
   name: medicitas-db
   namespace: medicitas
 spec:
-  # Una sola instancia en el paso 1. La réplica y el failover son el paso 4, lo primero que se recorta.
-  instances: 1
+  # Paso 4: dos instancias, una principal y una secundaria (docs/diseno-servicios.md §7).
+  #
+  # El operador copia la principal a la secundaria (pg_basebackup) y la mantiene al día con replicación por
+  # streaming: la principal le envía cada cambio de su registro de escritura (WAL) en cuanto ocurre. Si la principal
+  # cae, el operador promueve la secundaria y mueve medicitas-db-rw hacia ella (failover). Los servicios y Keycloak
+  # entran por los Poolers o por -rw, así que siguen a la principal sin cambiar nada.
+  #
+  # La secundaria solo espera: no atiende lecturas. Gana disponibilidad, no capacidad. Y no es un respaldo: copia al
+  # instante también los errores (un DELETE equivocado se borra en las dos). Para eso harían falta copias en otro
+  # lugar (barman con almacenamiento de objetos), fuera del alcance de esta etapa.
+  #
+  # En minikube hay un solo nodo, así que las dos instancias comparten máquina: se protege contra la caída del pod o
+  # del proceso de PostgreSQL, no contra la de la máquina. El operador ya prefiere ponerlas en nodos distintos
+  # (enablePodAntiAffinity, en modo preferred) cuando los hay.
+  instances: 2
 
   # Sin imageName: se usa la imagen de PostgreSQL 18 que trae por defecto el operador (versión fijada en
   # k8s/deploy.sh), la misma versión mayor que Compose (postgres:18-alpine).
@@ -35,6 +48,18 @@ spec:
       # 20 cada uno en k8s/12-postgres-pooler.yaml), Keycloak (20) y margen para el operador y el superusuario. Compose
       # sigue con 100, porque ahí cada copia se conecta directo. Ver la cuenta en docs/diseno-servicios.md §7.
       max_connections: "150"
+
+    # Replicación síncrona: la principal responde el COMMIT solo cuando la secundaria confirmó que recibió el cambio.
+    # Así, si la principal muere, la secundaria tiene todo lo confirmado: ninguna reserva confirmada se pierde.
+    # La asíncrona (la opción por defecto) responde sin esperar y puede perder las últimas transacciones.
+    #   - method any, number 1: basta con que una secundaria confirme (hay una sola).
+    #   - dataDurability preferred: si la secundaria cae, la principal deja de esperarla y sigue aceptando escrituras.
+    #     Con required, las escrituras se bloquearían hasta que volviera: con una sola secundaria, eso cambiaría un
+    #     punto único de falla por otro.
+    synchronous:
+      method: any
+      number: 1
+      dataDurability: preferred
 
   storage:
     size: 1Gi

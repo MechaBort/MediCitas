@@ -78,6 +78,10 @@ for attempt in 1 2 3 4 5 6; do
   sleep 10
 done
 kubectl -n "$NAMESPACE" wait cluster/medicitas-db --for=condition=Ready --timeout=600s
+# Al pasar de una instancia a dos en un Cluster existente, la condición Ready puede seguir en True mientras el operador
+# todavía copia la secundaria: se espera a que todas las instancias del manifiesto estén listas.
+instances=$(kubectl -n "$NAMESPACE" get cluster/medicitas-db -o jsonpath='{.spec.instances}')
+kubectl -n "$NAMESPACE" wait cluster/medicitas-db --for=jsonpath='{.status.readyInstances}'="$instances" --timeout=600s
 
 step "Inicialización de la base (Job db-init)"
 # Como en Compose, la base se inicializa una sola vez. Un Job no se puede modificar después de creado, así que si ya

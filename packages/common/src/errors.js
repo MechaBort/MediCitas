@@ -53,6 +53,35 @@ const EXCLUSION_ERRORS = {
   'ex_appointments_patient': [409, 'Se cruza el paciente con otro registro vigente'],
 };
 
+// "La base no está disponible por un momento": la conexión se cayó o la base está arrancando, apagándose o cambiando
+// de principal (el failover de Kubernetes, k8s/10-postgres-cluster.yaml). Se responde 503 y no 500, porque no es un
+// error del código ni de los datos, y en unos segundos se resuelve solo.
+//
+// No se reintenta en el servidor (withTransaction solo repite los deadlocks): si la conexión se cae durante el COMMIT,
+// no se sabe si la transacción quedó guardada (commit ambiguo). Repetir una reserva que sí se guardó chocaría con el
+// EXCLUDE y el paciente recibiría un 409 por su propia cita. Lo decide el cliente, que puede consultar antes.
+const UNAVAILABLE_SQLSTATES = new Set([
+  '57P01', // admin_shutdown: la base se está apagando (el operador borra el pod de la principal)
+  '57P02', // crash_shutdown: otra conexión hizo caer el proceso de PostgreSQL
+  '57P03', // cannot_connect_now: la base está arrancando o recuperándose
+  '25006', // read_only_sql_transaction: se escribió en una instancia que ya no es la principal
+]);
+// Errores del socket. Al nivel superior del error solo los lanza node-postgres: fetch (Keycloak) los envuelve en
+// err.cause, jose lanza los suyos (JOSEError) y los de Redis se atrapan dentro de agenda.
+const UNAVAILABLE_SOCKET_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN']);
+
+export function isDatabaseUnavailable(err) {
+  const code = typeof err?.code === 'string' ? err.code : '';
+  // Clase 08 (connection_exception) completa. Incluye 08P01, con el que PgBouncer avisa que no alcanza la base.
+  if (code.startsWith('08')) return true;
+  if (UNAVAILABLE_SQLSTATES.has(code) || UNAVAILABLE_SOCKET_CODES.has(code)) return true;
+  // node-postgres, cuando la base cierra el socket a mitad de una consulta: "Connection terminated unexpectedly",
+  // sin código.
+  return code === '' && /^Connection terminated/.test(err?.message ?? '');
+}
+
+const UNAVAILABLE_MESSAGE = 'La base de datos no está disponible por un momento; reintente en unos segundos';
+
 // La entrada de una tabla de traducción, o undefined. Object.hasOwn evita que una clave como
 // "constructor" encuentre algo heredado de Object.prototype.
 function lookup(table, key) {
@@ -63,6 +92,9 @@ function lookup(table, key) {
 export function toResponse(err) {
   if (err instanceof HttpError) {
     return { status: err.status, body: { error: err.message, ...(err.details && { details: err.details }) } };
+  }
+  if (isDatabaseUnavailable(err)) {
+    return { status: 503, body: { error: UNAVAILABLE_MESSAGE } };
   }
   const pg = (err.code === '23P01' && lookup(EXCLUSION_ERRORS, err.constraint)) || lookup(PG_ERRORS, err.code);
   if (pg) {

@@ -55,6 +55,34 @@ test('Un error desconocido responde 500 sin filtrar su mensaje interno', () => {
   assert.deepEqual(body, { error: 'Error interno' });
 });
 
+test('Base no disponible (failover, arranque, conexión caída) → 503 sin filtrar el mensaje interno', () => {
+  const cases = [
+    pgError('57P01'), // la principal se apaga
+    pgError('57P02'),
+    pgError('57P03'), // la base está arrancando
+    pgError('25006'), // escritura en una instancia que ya no es la principal
+    pgError('08006'), // connection_failure
+    pgError('08P01'), // PgBouncer no alcanza la base
+    pgError('ECONNREFUSED'),
+    pgError('ECONNRESET'),
+    new Error('Connection terminated unexpectedly'),
+  ];
+  for (const err of cases) {
+    const { status, body } = toResponse(err);
+    assert.equal(status, 503, `${err.code ?? err.message} debería dar 503`);
+    assert.doesNotMatch(body.error, /mensaje interno|terminated/);
+  }
+});
+
+test('Los errores de datos y los desconocidos no se confunden con "base no disponible"', () => {
+  assert.equal(toResponse(pgError('23505')).status, 409);
+  assert.equal(toResponse(pgError('42P01')).status, 500); // tabla inexistente: error nuestro
+  assert.equal(toResponse(pgError('53300')).status, 500); // sin conexiones libres: error de configuración
+  assert.equal(toResponse(new Error('Connection refused por otra cosa')).status, 500);
+  // fetch (Keycloak) deja el código del socket en err.cause, no arriba: sigue siendo 500.
+  assert.equal(toResponse(new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED' } })).status, 500);
+});
+
 test('Un código heredado de Object.prototype ("constructor") no encuentra nada en las tablas', () => {
   assert.equal(toResponse(pgError('constructor')).status, 500);
 });

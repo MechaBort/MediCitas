@@ -158,8 +158,8 @@ RF21).**
     `ix_appointments_clinic_start`, y siempre devuelve cinco números. Lo usa solo el administrador, de vez en cuando.
 - **Elegido.** 366 días, un año completo aunque sea bisiesto. Medido con `EXPLAIN ANALYZE` sobre el seed: un año de
   la clínica de San José (1 444 citas) se cuenta en ~4 ms por el índice. El costo crece con las citas del rango, no
-  con los días: una clínica con 40 000 citas al año rondaría los 100 ms. En Kubernetes, con réplica (sección 7), esta
-  lectura puede ir al servicio `-ro`.
+  con los días: una clínica con 40 000 citas al año rondaría los 100 ms. En Kubernetes ya hay una réplica (sección 7,
+  paso 4), y esta lectura es la primera candidata para mandarla al servicio `-ro` cuando haga falta.
 - **Alternativa descartada.** Sin tope: alguien podría pedir diez años de una sola vez.
 - **Lo que se sacrifica.** Para comparar varios años, el cliente hace una consulta por año.
 
@@ -451,7 +451,8 @@ transacción.
 
 **Cómo seguir creciendo.**
 
-- **Réplicas de lectura** para los reportes, que se agregan en el paso de failover de la sección 7.
+- **Lecturas en la réplica** para los reportes. La réplica ya existe desde el paso 4 de la sección 7, pero hoy solo
+  espera para el failover; mandarle RF19 y RF21 es el siguiente paso.
 - **Mover `agenda` a su propio servidor**, como explica la sección 5.
 - **Repartir las clínicas entre varios servidores**, usando `clinic_id` como criterio. A esto se le llama
   *sharding*. El modelo ya está preparado: todas las tablas tienen `clinic_id`, y las llaves compuestas lo
@@ -485,15 +486,17 @@ Se describe en un recurso `Cluster`, y PgBouncer en un recurso `Pooler`.
 
 | Paso | Qué se despliega | Qué se gana |
 |---|---|---|
-| Primero | `instances: 1` más un `Pooler` en modo transacción | La base y PgBouncer desde el primer despliegue |
-| Después | `instances: 2`: una principal y una réplica | Failover automático y lecturas en la réplica |
+| 1 | `instances: 1` más un `Pooler` en modo transacción | La base y PgBouncer desde el primer despliegue |
+| 4 (hecho) | `instances: 2`: una principal y una secundaria síncrona | Failover automático sin perder escrituras confirmadas |
+| Después | Lecturas de los reportes en la réplica | Capacidad de lectura |
 
 Con réplica, el operador crea dos direcciones: `-rw`, que lleva a la principal, y `-ro`, que lleva a las
-réplicas. La réplica puede ir unos instantes atrasada respecto a la principal, así que:
+réplicas. **Hoy todo va a `-rw`:** la secundaria solo espera (decisiones del paso 4, más abajo). Si más adelante se
+le mandan lecturas, hay que tener en cuenta que una réplica puede ir unos instantes atrasada respecto a la principal:
 
-- **Van a la réplica (`-ro`)** solo los reportes: RF19 (consulta de la bitácora) y RF21 (conteo por estado), que
-  toleran ese atraso.
-- **Van siempre a la principal (`-rw`):**
+- **Podrían ir a la réplica (`-ro`)** solo los reportes: RF19 (consulta de la bitácora) y RF21 (conteo por estado),
+  que toleran ese atraso.
+- **Irían siempre a la principal (`-rw`):**
   - RF7, porque mostrar como libre un espacio ya tomado viola I8;
   - todas las escrituras;
   - toda lectura que además escribe en la bitácora.
@@ -678,6 +681,119 @@ lo demás. Las cifras sirven para comparar entre sí, no como la capacidad de un
 demuestra es el **mecanismo**: el HPA detecta la carga, agrega copias y las quita cuando la carga baja, sin que el
 cuello de botella se mueva a las conexiones de la base. Llegar a la meta de 3 300 consultas por segundo exige más
 nodos, no más copias en un solo nodo.
+
+### Decisiones del paso 4 (`feat/k8s-failover`, 2026-11-12)
+
+El paso 4 se había descartado: un segundo PostgreSQL encendido que solo sirve si el primero se cae no parecía
+compensar. Se retomó el 2026-11-12 porque la implementación es pequeña (el operador hace casi todo) y la base era el
+único componente sin una segunda copia: el gateway, `agenda` y los Poolers ya tenían dos o más.
+
+**Decisión: una secundaria que solo espera, sin lecturas (`instances: 2` en `k8s/10-postgres-cluster.yaml`).**
+- **Problema.** Con una sola instancia, si el pod de PostgreSQL o su proceso muere, todo el sistema se queda sin base
+  hasta que el operador lo vuelva a levantar.
+- **Cómo funciona.** El operador copia la principal a la secundaria (`pg_basebackup`) y la mantiene al día con
+  **replicación por streaming**: la principal le envía cada cambio de su registro de escritura (WAL) en cuanto
+  ocurre. Si la principal cae, el operador promueve la secundaria y mueve `medicitas-db-rw` hacia ella. Los servicios
+  y Keycloak entran por los Poolers o por `-rw`, así que siguen a la principal **sin cambiar código**.
+- **Elegido.** La secundaria no atiende lecturas: todo sigue yendo a `-rw`.
+- **Alternativa descartada.** Mandar RF19 y RF21 a `-ro` en este mismo paso. Agregaría una segunda conexión por
+  servicio y obligaría a pensar en el atraso de la réplica, y no hace falta para la confiabilidad, que era el
+  objetivo.
+- **Lo que se sacrifica.** La secundaria gana **disponibilidad**, no capacidad: ocupa CPU y memoria (500m y 512 MiB
+  reservados) sin atender carga.
+- **Lo que no es.** No es un respaldo. Copia al instante también los errores: un `DELETE` equivocado se borra en las
+  dos. Para protegerse de eso harían falta copias guardadas en otro lugar (una copia base y el WAL archivado, por
+  ejemplo con barman en un almacenamiento de objetos), que quedan fuera del alcance.
+- **En minikube** hay un solo nodo: las dos instancias comparten máquina. Se protege contra la caída del pod o del
+  proceso de PostgreSQL, no contra la de la máquina. El operador ya prefiere ponerlas en nodos distintos cuando los
+  hay.
+
+**Decisión: replicación síncrona en modo `preferred`.**
+- **Problema.** Con la replicación **asíncrona** (la opción por defecto), la principal responde el COMMIT sin esperar
+  a la secundaria. Si muere en ese instante, la secundaria se promueve sin esas últimas transacciones: un paciente
+  pudo recibir "reserva confirmada" y su cita no existe en la base nueva.
+- **Elegido.** `synchronous: { method: any, number: 1, dataDurability: preferred }`. La principal responde el COMMIT
+  solo cuando la secundaria confirmó que recibió el cambio, así que lo que se puede perder es cero. Con `preferred`,
+  si la secundaria cae, la principal deja de esperarla y sigue aceptando escrituras.
+- **Alternativas descartadas.**
+  - La asíncrona: es más rápida, pero acepta perder reservas confirmadas.
+  - La síncrona estricta (`required`): nunca pierde nada, pero si la secundaria cae, las escrituras se bloquean hasta
+    que vuelva. Con una sola secundaria, eso cambia un punto único de falla por otro.
+- **Lo que se sacrifica.** Cada COMMIT espera a la secundaria. Medido con `pgbench` en tres rondas alternadas (10
+  conexiones, solo inserciones, comparando `synchronous_commit` en `on` y en `local` sobre la misma base):
+
+  | Modo del COMMIT | Latencia media | Inserciones por segundo |
+  |---|---|---|
+  | `local` (no espera a la secundaria) | ~18,7 ms | ~530 |
+  | `on` (espera a la secundaria) | ~25 ms | ~400 |
+
+  Son unos 6 ms más por escritura. Las lecturas no lo pagan: RF7 con `k8s/load-test.sh` dio ~757 consultas por
+  segundo, igual que antes (~753). La carga de citas es sobre todo de lecturas.
+
+**Decisión: durante el failover, la API responde 503 y no reintenta (`isDatabaseUnavailable` en
+`packages/common/src/errors.js`).**
+- **Problema.** Mientras la secundaria se promueve, las peticiones encuentran la base caída. Antes, eso se traducía
+  en un 500 "Error interno", que dice "error nuestro" cuando en realidad es "no disponible por un momento".
+- **Elegido.** `toResponse` responde `503 {"error": "La base de datos no está disponible por un momento; reintente en
+  unos segundos"}` ante:
+  - la clase SQLSTATE `08` completa (errores de conexión, incluido el `08P01` de PgBouncer);
+  - `57P01`, `57P02` y `57P03` (la base se apaga, se cayó o está arrancando);
+  - `25006` (escribir en una instancia que ya no es la principal);
+  - los errores del socket (`ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT`, `EPIPE`, `ENOTFOUND`, `EAI_AGAIN`) y el
+    "Connection terminated unexpectedly" de node-postgres. Al nivel superior del error solo los lanza node-postgres:
+    `fetch` (Keycloak) los deja en `err.cause`, así que una caída de Keycloak nunca se presenta como una caída de la
+    base.
+- **Lo que sigue siendo 500.** El `53300` ("demasiadas conexiones"): no es un corte pasajero sino un error de
+  configuración (la lección del paso 3), y un 503 "reintente" lo escondería.
+- **Alternativa descartada: reintentar en el servidor.** Si la conexión se cae durante el COMMIT, el servicio no sabe
+  si la transacción quedó guardada. A eso se le llama **commit ambiguo**. Repetir una reserva que sí se guardó
+  chocaría con el `EXCLUDE`, y el paciente recibiría un 409 por su propia cita. Un deadlock es distinto: la base
+  garantiza que la transacción se deshizo, y por eso `withTransaction` solo reintenta los `40P01`.
+- **Lo que se sacrifica.** El cliente decide si reintenta. Ante un 503 en una escritura, conviene consultar antes si
+  quedó guardada.
+- **Compose también lo usa.** Con la base de Compose detenida, los tres servicios responden 503 (errores reales
+  `57P01` y `ENOTFOUND db`) y vuelven a 200 unos 2 s después de encenderla, sin reiniciarse.
+
+**Decisión: `server_login_retry` y `tcp_user_timeout` en los dos Poolers.**
+- **Problema.** En las primeras mediciones, la API seguía respondiendo 503 hasta ~13 s después de la promoción. La
+  causa es PgBouncer: después de un intento fallido de conexión, espera `server_login_retry` (15 s por defecto) antes
+  de volver a intentar.
+- **Elegido.** `server_login_retry: "1"` y `tcp_user_timeout: "5000"`. El segundo corta a los 5 s una conexión a una
+  instancia que murió sin avisar, en lugar de esperar los minutos que tarda TCP en rendirse.
+- **Resultado.** La API vuelve entre 0 y 3 s después de la promoción, en lugar de ~13 s. El efecto de
+  `tcp_user_timeout` no se midió por separado: con los dos, la petición más lenta del corte bajó de ~30 s a ~20 s y
+  terminó en 200, porque esperó en la fila de PgBouncer.
+
+**Cómo se demuestra: `k8s/failover-test.sh`.**
+- **Qué hace.**
+  - Arranca tres sondas: escrituras numeradas en una tabla de prueba (en la base `postgres`, no en `medicitas`),
+    `GET /agenda` cada 0,5 s y pedidos de token a Keycloak.
+  - Borra el pod de la principal con 1 s de gracia. Un borrado normal haría un apagado ordenado, que espera a los
+    clientes: eso es un mantenimiento, no una caída.
+  - Mide la promoción y la recuperación, y espera a que el pod borrado vuelva como secundaria.
+  - **Falla** si se perdió una escritura confirmada, si cambiaron los conteos de citas o de bitácora, o si la API
+    respondió 500.
+  - Al final corre la suite contra la nueva principal.
+- **Resultados** (seis corridas el 2026-11-12; las tres últimas con los parámetros de los Poolers, y la última sobre
+  un clúster recién creado con `minikube delete`):
+
+  | Qué | Resultado |
+  |---|---|
+  | Promoción de la secundaria | ~20 a 24 s |
+  | Escrituras confirmadas perdidas | **0** (de 52 a 306 por corrida) |
+  | Commits ambiguos | 0 |
+  | API durante el corte | 503 inmediatos, ningún 500 |
+  | API de vuelta | 0 a 3 s después de la promoción |
+  | El pod borrado, de vuelta como secundaria síncrona | a más tardar ~34 a 40 s (se revisa después del inicio de sesión) |
+  | Suite contra la nueva principal | 166 de 166 |
+
+**Límite conocido: Keycloak.** Keycloak guarda su estado en el mismo PostgreSQL. Su pool de conexiones (Agroal) no
+revisa las conexiones antes de prestarlas, así que después del failover cada conexión a la principal vieja hace fallar
+un inicio de sesión con 500 ("This connection has been closed") antes de descartarse. En las corridas fueron entre
+12 y 20 errores, y el inicio de sesión quedó estable a los ~29 a 39 s del corte. **Las sesiones abiertas no se
+afectan:** los servicios validan los tokens con las llaves de Keycloak que ya tienen en memoria. Se decidió
+documentarlo y no cambiar la configuración de Keycloak tan cerca del congelamiento. Lo mismo pasa en Compose si se
+reinicia la base.
 
 ---
 

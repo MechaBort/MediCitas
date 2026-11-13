@@ -1728,6 +1728,9 @@ gateway/nginx.conf        el reparto de rutas
     - `EXCLUSION_ERRORS`, por el nombre de la restricción que falló (`err.constraint`). Las tres `EXCLUDE` fallan
       con el mismo `23P01`, pero el nombre dice si el choque fue con el profesional (I1), con el paciente (I2) o
       entre bloques de horario. Una restricción que no esté en la tabla responde el `23P01` genérico.
+  - `isDatabaseUnavailable` (desde el paso 4 de Kubernetes, sección 9b.5) reconoce los errores de "la base no está
+    disponible por un momento": la conexión se cayó, o la base se está apagando, arrancando o cambiando de principal.
+    Con ellos, `toResponse` responde **503** "reintente en unos segundos" en lugar de 500.
   - **Criterio del código:** 4xx cuando la regla rechaza algo que un cliente sí puede pedir (el cliente debe
     cambiar su petición), y 500 solo para lo que desde la API es inalcanzable (`MC004`, `MC005`). Un 5xx le dice
     al cliente que reintente, y además el servicio lo registra en el log como falla.
@@ -2094,6 +2097,58 @@ kubectl -n medicitas get hpa agenda       # TARGETS muestra la CPU media contra 
 kubectl -n medicitas top pods             # la CPU de cada pod (metrics-server)
 ```
 
+### 9b.5 Paso 4: la base secundaria y el failover 🔴
+
+Hasta el paso 3, la base era la única pieza sin una segunda copia: si su pod moría, todo el sistema se quedaba sin
+base hasta que el operador la volviera a levantar. En el paso 4, `k8s/10-postgres-cluster.yaml` pasó de
+`instances: 1` a `instances: 2`, y el operador hace el resto:
+
+1. **Copia** la principal a una segunda instancia, la **secundaria**.
+2. **La mantiene al día** con *replicación por streaming*: la principal le envía cada cambio de su registro de
+   escritura (el WAL) en cuanto ocurre.
+3. **Si la principal cae, la reemplaza:** promueve la secundaria y mueve `medicitas-db-rw` hacia ella. Eso es el
+   **failover**. Los servicios entran por PgBouncer y PgBouncer por `-rw`, así que siguen a la nueva principal sin
+   cambiar una línea de código.
+
+**Tres ideas que hay que poder explicar:**
+
+- **La secundaria solo espera.** No atiende lecturas: gana **disponibilidad**, no capacidad. Mandarle los reportes
+  (RF19, RF21) es el siguiente paso, y no se hizo porque no hacía falta para la confiabilidad.
+- **No es un respaldo.** Copia al instante también los errores: un `DELETE` equivocado se borra en las dos. Contra eso
+  protegen las copias guardadas en otro lugar, que quedan fuera del alcance.
+- **Es síncrona en modo `preferred`.** La principal responde el COMMIT solo cuando la secundaria confirmó que recibió
+  el cambio, así que si la principal muere, **no se pierde ninguna reserva confirmada**. Cuesta unos 6 ms por
+  escritura (medido con `pgbench`); las lecturas no lo pagan. `preferred` significa que, si la secundaria es la que
+  cae, la principal deja de esperarla: las escrituras no se bloquean.
+
+**Qué ve el usuario durante el corte.** La API responde **503** "la base no está disponible por un momento;
+reintente" (función `isDatabaseUnavailable`, sección 8.1). No se reintenta en el servidor por el **commit ambiguo**:
+si la conexión se cae durante el COMMIT, no se sabe si la transacción quedó guardada, y repetir una reserva que sí se
+guardó haría que el paciente recibiera un 409 por su propia cita. Un deadlock sí se reintenta, porque la base
+garantiza que esa transacción se deshizo.
+
+**Lo que se midió** con `k8s/failover-test.sh`, en seis corridas:
+- la promoción tarda ~20 a 24 s;
+- **cero** escrituras confirmadas perdidas;
+- la API responde 503 durante el corte, nunca 500, y vuelve 0 a 3 s después de la promoción;
+- la suite pasa 166 de 166 contra la nueva principal.
+
+**Dos hallazgos para la defensa:**
+- **PgBouncer tardaba ~13 s más que la base en volver.** Tras un intento fallido de conexión, espera 15 s antes de
+  reintentar (`server_login_retry`). Con 1 s, la API vuelve en cuanto la base está lista.
+- **Keycloak tarda en recuperarse.** Su pool de conexiones no revisa las conexiones antes de usarlas, así que después
+  del failover fallan entre 12 y 20 inicios de sesión, hasta los ~30 s. Las sesiones abiertas no se afectan, porque
+  los servicios ya tienen las llaves de Keycloak en memoria. Quedó documentado como límite conocido.
+
+**E43. Ver el failover:**
+
+```bash
+./k8s/failover-test.sh                    # mata la principal, mide el corte, verifica que no se perdió nada y corre la suite
+kubectl -n medicitas get cluster medicitas-db      # "Cluster in healthy state", 2 instancias, la principal actual
+kubectl -n medicitas exec medicitas-db-1 -c postgres -- psql -U postgres -Atc \
+  "SELECT application_name, state, sync_state FROM pg_stat_replication"   # en la principal: la secundaria en "streaming quorum"
+```
+
 **Preguntas de control.**
 - ¿Por qué la base se inicializa con un Job y no con el SQL de inicialización que ofrece el operador?
 - Si `agenda` escala a 20 copias, ¿cuántas conexiones reales abre contra PostgreSQL? ¿Por qué?
@@ -2102,6 +2157,9 @@ kubectl -n medicitas top pods             # la CPU de cada pod (metrics-server)
 - Si se borra un pod de `agenda`, ¿qué hace Kubernetes y por qué no se corta el servicio?
 - ¿Por qué el Deployment de `agenda` no fija `replicas`?
 - ¿Por qué con un solo PgBouncer compartido escalar `agenda` a 6 copias la hacía más lenta, y cómo se arregló?
+- ¿Por qué la secundaria aumenta la disponibilidad pero no la capacidad? ¿Y por qué no es un respaldo?
+- ¿Qué se gana y qué se paga con la replicación síncrona? ¿Qué cambia con `preferred` frente a `required`?
+- ¿Por qué la API responde 503 durante el failover y no reintenta la transacción?
 
 ## Parte 10. Estado de los requisitos
 
@@ -2132,7 +2190,7 @@ kubectl -n medicitas top pods             # la CPU de cada pod (metrics-server)
 | RF21 | Conteo por estado | ✔ consulta (E23) | ✔ `GET /reports/appointments-by-status`, hasta 366 días, con pruebas |
 
 **Otros entregables** (al 2026-11-12):
-- **Pruebas automatizadas ✔:** 164 pruebas, unitarias y de integración, que pasan con un solo comando en Compose
+- **Pruebas automatizadas ✔:** 166 pruebas, unitarias y de integración, que pasan con un solo comando en Compose
   (`docker compose --profile test run --rm tests`) y en Kubernetes (`./k8s/run-tests.sh`). Hay al menos una por
   invariante, y la carrera, la fuga entre clínicas y el deadlock tienen las suyas.
 - **`EXPLAIN ANALYZE` de los índices ✔:** en el README, "Justificación con `EXPLAIN ANALYZE`".
@@ -2146,9 +2204,9 @@ kubectl -n medicitas top pods             # la CPU de cada pod (metrics-server)
 
 **Requisitos del profesor fuera de la rúbrica:**
 - **Separación en servicios ✔:** `admin`, `agenda` y `clinical`, detrás del gateway, cada uno con su usuario de base.
-- **Kubernetes ✔:** pasos 1 a 3 (CloudNativePG con PgBouncer; servicios, gateway, Keycloak y Redis; HPA de `agenda`).
-  El paso 4, la réplica con failover, se descartó a propósito: un segundo PostgreSQL encendido que solo sirve si el
-  primero se cae no compensa en esta etapa.
+- **Kubernetes ✔:** pasos 1 a 4 (CloudNativePG con PgBouncer; servicios, gateway, Keycloak y Redis; HPA de `agenda`;
+  base secundaria síncrona con failover automático, demostrado con `k8s/failover-test.sh`). La secundaria todavía no
+  atiende lecturas.
 - **Módulo del §9 ✔:** auditoría verificable, con la cadena de huellas SHA-256 y `GET /audit/verify`.
 
 ---
@@ -2331,6 +2389,22 @@ Dice para qué aplicación se emitió el token. La API rechazará tokens cuyo `a
 token emitido para otra aplicación del mismo Keycloak no sirva contra la nuestra.
 </details>
 
+<details><summary><b>9b.1</b> La principal se cae justo después de confirmar una reserva. ¿La cita existe en la nueva principal?</summary>
+
+Sí. La replicación es síncrona: la principal solo responde el COMMIT cuando la secundaria confirmó que recibió el
+cambio, así que toda reserva confirmada ya está en la secundaria cuando se promueve. `k8s/failover-test.sh` lo
+comprueba: en seis corridas, cero escrituras confirmadas perdidas. Con replicación asíncrona, la respuesta sería
+"probablemente, pero no siempre".
+</details>
+
+<details><summary><b>9b.2</b> Si la conexión se cae durante el COMMIT de una reserva, ¿por qué la API no la reintenta?</summary>
+
+Porque no sabe si la transacción quedó guardada (commit ambiguo). Si se guardó y se reintenta, el `EXCLUDE` rechaza
+la nueva inserción contra la propia cita del paciente, y él recibe un 409 "horario ocupado". La API responde 503 y el
+cliente, antes de repetir, puede consultar si la cita existe. Un deadlock sí se reintenta, porque PostgreSQL
+garantiza que la transacción abortada se deshizo por completo.
+</details>
+
 **Preguntas abiertas para practicar la defensa** (no tienen una única respuesta correcta):
 
 - ¿Qué ganaron y qué sacrificaron al elegir columna discriminadora en vez de un esquema por clínica?
@@ -2403,6 +2477,11 @@ token emitido para otra aplicación del mismo Keycloak no sirva contra la nuestr
 | Workspace (npm) | Proyecto dentro de otro en el mismo repositorio, con un `package-lock.json` compartido (`packages/common`, `services/admin`) |
 | Arquitectura basada en servicios | Varios servicios que se despliegan por separado y comparten una base; a diferencia de los microservicios, no tiene una base por servicio |
 | Determinista | Que con la misma entrada siempre produce la misma salida |
+| Réplica o secundaria | Otra instancia de la base que se mantiene al día copiando los cambios de la principal |
+| Replicación por streaming | La principal envía cada cambio de su registro de escritura (WAL) a la secundaria en cuanto ocurre |
+| Replicación síncrona | La principal responde el COMMIT solo cuando la secundaria confirmó que recibió el cambio; no se pierde lo confirmado |
+| Failover | Reemplazar automáticamente la principal caída por la secundaria, que pasa a ser la nueva principal |
+| Commit ambiguo | La conexión se cayó durante el COMMIT y el cliente no sabe si la transacción quedó guardada |
 
 ---
 

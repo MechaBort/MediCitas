@@ -20,18 +20,20 @@ desactualizadas.
 
 ## 2. Resultado
 
-Corrida oficial del 2026-11-12, sobre el código de la entrega (rama `cierre-entrega`, a partir de `main` `2f51daa`),
-en los dos entornos y desde cero:
+Corrida oficial del 2026-11-12, sobre el código de la entrega con el paso 4 de Kubernetes (rama `feat/k8s-failover`, a
+partir de `main` `f98e0df`), en los dos entornos y desde cero:
 
 | Entorno | Cómo | Pruebas | Pasan | Fallan | Duración |
 |---|---|---|---|---|---|
-| Docker Compose | Clon limpio en una copia aislada, base nueva, `docker compose --profile test run --build --rm tests` (tres corridas seguidas) | 164 | **164** | 0 | 6,1 s |
-| Kubernetes (minikube) | `minikube delete`, `./k8s/deploy.sh` desde cero (247 s) y `./k8s/run-tests.sh`, dentro del clúster | 164 | **164** | 0 | 10,1 s |
+| Docker Compose | Copia limpia del código en una pila aislada, base nueva, `docker compose --profile test run --build --rm tests` (tres corridas seguidas) | 166 | **166** | 0 | 12,3 a 15,6 s |
+| Kubernetes (minikube) | `minikube delete`, `./k8s/deploy.sh` desde cero (354 s) y `./k8s/run-tests.sh`, dentro del clúster | 166 | **166** | 0 | 20,0 s |
+| Kubernetes, después del failover | `./k8s/failover-test.sh`: mata la principal y corre la suite contra la nueva | 166 | **166** | 0 | 17,8 s |
 
-Antes de la suite, sobre la base recién creada de Compose, la colección de peticiones completa
-(`node tests/tools/correr-coleccion.mjs`) devolvió en sus 59 peticiones el código que anuncia cada una.
+En la corrida oficial anterior (rama `cierre-entrega`), sobre la base recién creada de Compose, la colección de
+peticiones completa (`node tests/tools/correr-coleccion.mjs`) devolvió en sus 59 peticiones el código que anuncia cada
+una. El paso 4 no cambió ninguna ruta.
 
-Hay 162 pruebas declaradas en 20 archivos: 3 de pruebas unitarias y 17 de integración. Se ejecutan 164, porque
+Hay 164 pruebas declaradas en 20 archivos: 3 de pruebas unitarias y 17 de integración. Se ejecutan 166, porque
 `gateway.test.js` crea una prueba por cada servicio. **La misma suite pasa igual en los dos entornos.**
 
 Las pruebas no borran lo que crean, porque el dominio no tiene borrados físicos, así que se pueden repetir sobre la
@@ -43,7 +45,8 @@ crean para eso, y al final la dejan como estaba.
 
 - **Herramienta:** `node:test`, el ejecutor que trae Node, con `assert` y `fetch`. No agrega dependencias.
 - **Unitarias** (`packages/common/test/`, `services/agenda/test/`), sin la pila:
-  - la traducción de los errores de la base a HTTP (`MC001`–`MC006` y los `23P01` por restricción);
+  - la traducción de los errores de la base a HTTP (`MC001`–`MC006`, los `23P01` por restricción y el 503 cuando la
+    base no está disponible);
   - la validación de entradas;
   - la validación del rol de `withTransaction`;
   - el corte de los huecos libres en espacios (`slots.js`).
@@ -154,6 +157,8 @@ Generada con `node tests/tools/matriz-cobertura.mjs --write`. Hay que volver a e
 - Una restricción EXCLUDE desconocida responde el 23P01 genérico
 - Códigos estándar de Postgres: 23505 → 409, 23514 → 400, 42501 → 403
 - Un error desconocido responde 500 sin filtrar su mensaje interno
+- Base no disponible (failover, arranque, conexión caída) → 503 sin filtrar el mensaje interno
+- Los errores de datos y los desconocidos no se confunden con "base no disponible"
 - Un código heredado de Object.prototype ("constructor") no encuentra nada en las tablas
 - Un error de Express con status 4xx conserva su status y su mensaje
 - HttpError responde su status, su mensaje y sus detalles
@@ -361,7 +366,7 @@ Generada con `node tests/tools/matriz-cobertura.mjs --write`. Hay que volver a e
 - I5: un clinicId en el body se rechaza con 400
 - RF2: un id de usuario que no es un número responde 400
 
-_162 pruebas declaradas en 20 archivos. Requisitos sin prueba: ninguno._
+_164 pruebas declaradas en 20 archivos. Requisitos sin prueba: ninguno._
 <!-- matriz:fin -->
 
 ## 6. Mediciones
@@ -390,6 +395,25 @@ Con `./k8s/load-test.sh` (k6 dentro del clúster, 100 usuarios durante 3 minutos
 La medición también encontró un cuello de botella, que se corrigió: con un PgBouncer compartido, 6 copias atendían
 menos que 2. El detalle está en `docs/diseno-servicios.md` §7.
 
+### Failover de la base en Kubernetes (paso 4)
+
+`./k8s/failover-test.sh` simula la caída de la principal: borra su pod con 1 s de gracia mientras tres sondas escriben
+en la base, consultan `GET /agenda` y piden tokens a Keycloak. **Falla** si se pierde una escritura confirmada, si
+cambian los conteos de citas o de bitácora, o si la API responde 500. Seis corridas el 2026-11-12 (las tres últimas
+con `server_login_retry` y `tcp_user_timeout` en los Poolers, y la última sobre un clúster recién creado):
+
+| Qué | Resultado |
+|---|---|
+| Promoción de la secundaria | ~20 a 24 s |
+| Escrituras confirmadas perdidas | **0** en las seis (de 52 a 306 por corrida) |
+| API durante el corte | 503 inmediatos, ningún 500 |
+| API de vuelta | 0 a 3 s después de la promoción (antes de ajustar PgBouncer, ~13 s) |
+| Suite contra la nueva principal | 166 de 166 |
+
+El costo de la replicación síncrona, con `pgbench` (10 conexiones, solo inserciones): ~25 ms por COMMIT contra ~18,7
+ms sin esperar a la secundaria. RF7 no cambia: ~757 consultas por segundo con `./k8s/load-test.sh`. El detalle está en
+`docs/diseno-servicios.md` §7, "Decisiones del paso 4".
+
 ### Costo de la auditoría verificable (módulo del §9)
 
 Lecturas auditadas (`GET /patients/{id}`) de una sola clínica, con 50 usuarios: ~530 por segundo sin la cadena de
@@ -409,7 +433,11 @@ capacidad de un clúster real.
   detalle está en `docs/diseno-servicios.md`, sección 9. Después, la suite pasó todas las corridas seguidas, también
   sobre una base que acumulaba las anteriores.
 - **La prueba de carga no es parte de `npm test`:** es una medición, no una aserción, y tarda minutos. Se corre aparte
-  con k6.
+  con k6. Tampoco lo es `k8s/failover-test.sh`, porque mata la principal de la base.
+- **Keycloak después de un corte de la base.** Su pool de conexiones no revisa las conexiones antes de usarlas: después
+  del failover (o de reiniciar la base en Compose), entre 12 y 20 inicios de sesión fallan con 500 hasta los ~30 s. Las
+  sesiones abiertas no se afectan. Si la suite se corre justo en ese momento, fallan las pruebas que piden tokens; por
+  eso `failover-test.sh` espera a que el inicio de sesión vuelva antes de correrla.
 - **La caída de Redis se comprobó a mano,** deteniendo Redis en una copia aislada: RF7 respondió 200 con
   `X-MediCitas-Cache: off`. No hay una prueba automatizada para eso, porque exigiría que la suite detuviera
   contenedores.

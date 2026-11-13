@@ -31,3 +31,14 @@ spec:
       # Conexiones de clientes (las copias de los servicios) que acepta cada PgBouncer. Son baratas: 1000 alcanzan
       # para 100 copias de agenda con su pool de 10.
       max_client_conn: "1000"
+      # Failover (paso 4, docs/diseno-servicios.md §7). Cuando la principal cae, PgBouncer pierde sus conexiones reales:
+      #   - server_login_retry: cuánto espera para volver a intentar conectarse a la base después de un intento fallido.
+      #     Con los 15 s por defecto, la API seguía respondiendo 503 hasta ~13 s después de la promoción; con 1 s volvió
+      #     entre 0 y 3 s después (k8s/failover-test.sh, 2026-11-12).
+      #   - tcp_user_timeout: cuántos milisegundos puede quedar sin confirmar lo enviado por una conexión antes de que el
+      #     sistema operativo la corte. Una instancia que muere de golpe no avisa que cerró; sin este límite, PgBouncer
+      #     podría esperar en esa conexión muerta los minutos que tarda TCP en rendirse. Con los dos parámetros, la
+      #     petición más lenta del corte bajó de ~30 s a ~20 s y terminó en 200: esperó en la fila de PgBouncer hasta
+      #     que llegó la nueva principal.
+      server_login_retry: "1"
+      tcp_user_timeout: "5000"
