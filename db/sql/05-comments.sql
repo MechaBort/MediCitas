@@ -13,7 +13,7 @@ SET search_path = admin, agenda, clinical, public;
 BEGIN;
 
 COMMENT ON SCHEMA admin IS
-    'Servicio admin (RF1–RF4): clínicas, usuarios, roles y permisos, geografía, especialidades, catálogo de servicios y profesionales. También el registro de errores del sistema.';
+    'Servicio admin (RF1–RF4): clínicas, usuarios, roles y permisos, geografía, especialidades, catálogo de servicios y profesionales.';
 COMMENT ON SCHEMA agenda IS
     'Servicio agenda (RF5–RF13, RF16, RF20, RF21): horarios de atención, bloqueos y citas. Es el schema de mayor carga.';
 COMMENT ON SCHEMA clinical IS
@@ -289,23 +289,6 @@ COMMENT ON COLUMN audit_logs.metadata       IS 'Detalles adicionales del acceso 
 COMMENT ON COLUMN audit_logs.created_at     IS 'Cuándo ocurrió el acceso.';
 COMMENT ON COLUMN audit_logs.prev_hash      IS 'Huella SHA-256 (64 caracteres hexadecimales) del registro anterior de la misma clínica; NULL en el primer registro (§9).';
 COMMENT ON COLUMN audit_logs.row_hash       IS 'Huella SHA-256 (64 caracteres hexadecimales) calculada sobre prev_hash y las columnas del registro al insertar (§9).';
-
-COMMENT ON TABLE severities IS 'Niveles de gravedad de system_errors_logs. Ids fijos.';
-COMMENT ON COLUMN severities.severity_id IS 'Id fijo de la gravedad.';
-COMMENT ON COLUMN severities.name        IS 'Nombre técnico de la gravedad.';
-COMMENT ON COLUMN severities.description IS 'Descripción legible.';
-
-COMMENT ON TABLE system_errors_logs IS
-    'Registro técnico de errores de la aplicación, para diagnóstico. No guarda datos de negocio ni pertenece a una clínica.';
-COMMENT ON COLUMN system_errors_logs.error_id      IS 'Identificador del error.';
-COMMENT ON COLUMN system_errors_logs.severity_id   IS 'Gravedad.';
-COMMENT ON COLUMN system_errors_logs.process_uuid  IS 'Id de correlación de la petición o proceso; opcional.';
-COMMENT ON COLUMN system_errors_logs.process_name  IS 'Proceso o ruta donde ocurrió (ej. POST /appointments).';
-COMMENT ON COLUMN system_errors_logs.step_name     IS 'Paso dentro del proceso; opcional.';
-COMMENT ON COLUMN system_errors_logs.input_data    IS 'Entrada que causó el error, sin datos sensibles; opcional.';
-COMMENT ON COLUMN system_errors_logs.error_message IS 'Mensaje del error.';
-COMMENT ON COLUMN system_errors_logs.metadata      IS 'Detalles técnicos (ej. SQLSTATE); opcional.';
-COMMENT ON COLUMN system_errors_logs.created_at    IS 'Cuándo ocurrió el error.';
 
 
 -- =============================================================================

@@ -90,7 +90,6 @@ erDiagram
     patients ||--o{ audit_logs : "es objeto de"
     event_types ||--o{ audit_logs : "clasifica"
     data_objects ||--o{ audit_logs : "clasifica"
-    severities ||--o{ system_errors_logs : "clasifica"
 ```
 
 ## 3. Detalle por área
@@ -336,22 +335,6 @@ erDiagram
         varchar name UK
         varchar description
     }
-    system_errors_logs {
-        bigint error_id PK
-        smallint severity_id FK
-        uuid process_uuid "NULL"
-        varchar process_name
-        varchar step_name "NULL"
-        jsonb input_data "NULL"
-        text error_message
-        jsonb metadata "NULL"
-        timestamptz created_at
-    }
-    severities {
-        smallint severity_id PK
-        varchar name UK
-        varchar description
-    }
     users {
         int user_id PK
     }
@@ -363,5 +346,4 @@ erDiagram
     patients ||--o{ audit_logs : "es objeto de"
     event_types ||--o{ audit_logs : "clasifica"
     data_objects ||--o{ audit_logs : "clasifica"
-    severities ||--o{ system_errors_logs : "clasifica"
 ```

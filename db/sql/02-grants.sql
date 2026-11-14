@@ -29,7 +29,7 @@ REVOKE EXECUTE ON FUNCTION set_updated_at(), appointments_set_period(), appointm
 
 -- Catálogos y geografía: lectura para todos.
 GRANT SELECT ON roles, permissions, permissions_per_roles, specialties, genders,
-                contact_types, appointment_statuses, event_types, data_objects, severities,
+                contact_types, appointment_statuses, event_types, data_objects,
                 countries, states, cities, addresses, clinics_addresses
    TO mc_platform, mc_clinic_admin, mc_reception, mc_professional;
 
@@ -77,7 +77,5 @@ GRANT INSERT         ON audit_logs TO mc_reception, mc_professional;
 GRANT EXECUTE ON FUNCTION audit_log_compute_hash(char, bigint, int, int, smallint, smallint, bigint, int, varchar, jsonb, timestamptz),
                           verify_audit_chain(int)
    TO mc_clinic_admin;
-
-GRANT INSERT ON system_errors_logs TO mc_platform, mc_clinic_admin, mc_reception, mc_professional;
 
 COMMIT;
