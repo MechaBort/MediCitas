@@ -420,12 +420,6 @@ CREATE TABLE clinical.data_objects (
     description     VARCHAR(100) NOT NULL
 );
 
-CREATE TABLE admin.severities (
-    severity_id     SMALLINT PRIMARY KEY,
-    name            VARCHAR(50) NOT NULL UNIQUE,
-    description     VARCHAR(100) NOT NULL
-);
-
 -- RF18 / RF19: append-only, protegida en el motor (I6) y con cadena de huellas SHA-256 por clínica (§9).
 CREATE TABLE clinical.audit_logs (
     log_id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -442,18 +436,6 @@ CREATE TABLE clinical.audit_logs (
     row_hash        CHAR(64) NOT NULL,                -- huella SHA-256 de este registro encadenada con prev_hash
     FOREIGN KEY (clinic_id, user_id)    REFERENCES users (clinic_id, user_id),
     FOREIGN KEY (clinic_id, patient_id) REFERENCES patients (clinic_id, patient_id)
-);
-
-CREATE TABLE admin.system_errors_logs (
-    error_id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    severity_id     SMALLINT NOT NULL REFERENCES severities,
-    process_uuid    UUID,
-    process_name    VARCHAR(100) NOT NULL,
-    step_name       VARCHAR(100),
-    input_data      JSONB,
-    error_message   TEXT NOT NULL,
-    metadata        JSONB,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 

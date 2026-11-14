@@ -24,7 +24,7 @@ CREATE TEMP VIEW dd_areas (area_order, area, tables) AS VALUES
     (6, 'Citas y notas clínicas',
         ARRAY['appointment_statuses', 'appointments', 'clinical_notes']),
     (7, 'Bitácoras',
-        ARRAY['event_types', 'data_objects', 'audit_logs', 'severities', 'system_errors_logs']);
+        ARRAY['event_types', 'data_objects', 'audit_logs']);
 
 -- Las tablas viven en los schemas de los servicios (db/sql/01-schema.sql). El search_path
 -- queda solo con pg_catalog a propósito: así las FKs y las funciones salen con su schema
@@ -264,11 +264,6 @@ SELECT E'### Valores de data_objects\n\n| data_object_id | name | Descripción |
        || string_agg(format('| %s | `%s` | %s |', data_object_id, name, description), E'\n' ORDER BY data_object_id)
        || E'\n'
   FROM clinical.data_objects;
-
-SELECT E'### Valores de severities\n\n| severity_id | name | Descripción |\n|---|---|---|\n'
-       || string_agg(format('| %s | `%s` | %s |', severity_id, name, description), E'\n' ORDER BY severity_id)
-       || E'\n'
-  FROM admin.severities;
 
 -- Matriz de permisos: una columna por rol (los role_id son fijos).
 SELECT E'### Matriz de permisos (permissions y permissions_per_roles, RF17)\n\n'

@@ -57,12 +57,6 @@ INSERT INTO data_objects (data_object_id, name, description) VALUES
     (1, 'clinical_note',   'Nota clínica de una cita'),
     (2, 'patient_contact', 'Dato de contacto de un paciente');
 
-INSERT INTO severities (severity_id, name, description) VALUES
-    (1, 'info',     'Evento informativo'),
-    (2, 'warning',  'Situación anómala que no interrumpe la operación'),
-    (3, 'error',    'Falla de una operación'),
-    (4, 'critical', 'Falla que compromete el servicio');
-
 -- Permisos del dominio (RF17: el backend traduce el rol del token a estos permisos).
 -- Los sufijos _own indican que el backend además filtra por el usuario del token.
 INSERT INTO permissions (permission_name, description, updated_by) VALUES

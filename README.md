@@ -578,11 +578,6 @@ que el usuario del token sea su profesional antes de insertar.
 - name : VARCHAR(50) UNIQUE
 - description : VARCHAR(100)
 
-## severities
-- severityId : SMALLINT (PK)
-- name : VARCHAR(50) UNIQUE
-- description : VARCHAR(100)
-
 ## auditLogs [tenant] (RF18 / RF19 / §9 — append-only protegida en el motor, I6, y con cadena de huellas SHA-256)
 - logId : BIGINT GENERATED ALWAYS AS IDENTITY (PK)
 - clinicId : INT (FK compuesta)
@@ -604,16 +599,8 @@ Protección: ningún rol de la aplicación tiene `UPDATE`, `DELETE` ni `TRUNCATE
 trigger `BEFORE INSERT` encadena cada fila con SHA-256 por clínica para detectar cualquier manipulación hecha por
 fuera de la aplicación (Módulo §9).
 
-## systemErrorsLogs
-- errorId : BIGINT GENERATED ALWAYS AS IDENTITY (PK)
-- severityId : SMALLINT (FK → severities)
-- processUuid : UUID NULL
-- processName : VARCHAR(100)
-- stepName : VARCHAR(100) NULL
-- inputData : JSONB NULL
-- errorMessage : TEXT
-- metadata : JSONB NULL
-- createdAt : TIMESTAMPTZ DEFAULT now()
+Los errores internos de los servicios (las respuestas 5xx) no se guardan en la base: se escriben en la salida
+estándar de cada contenedor, donde los recogen `docker compose logs` y `kubectl logs`.
 
 ==============================================================
 |        					ÍNDICES              	 	     |

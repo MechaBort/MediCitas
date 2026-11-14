@@ -3,20 +3,25 @@
 Material de estudio del grupo. Explica **qué** se construyó, **cómo** funciona y **por qué** se decidió así, con
 experimentos para comprobar cada cosa por cuenta propia.
 
-Refleja el estado del proyecto al 8 de noviembre de 2026:
-- la infraestructura, la base de datos, Keycloak y Redis están listos;
-- la API valida tokens (RF17) y tiene las rutas de clínicas y usuarios (RF1, RF2);
-- el repositorio ya está organizado en servicios, y la base, en un schema por servicio.
+Refleja el estado del proyecto al 13 de noviembre de 2026 (`main` en `d359bf7`), es decir, la entrega completa:
+- **Los 21 requisitos funcionales y las 8 invariantes** están implementados y tienen pruebas automatizadas (166, que
+  pasan en Compose y en Kubernetes). La tabla de la [Parte 10](#parte-10-estado-de-los-requisitos) dice dónde está
+  cada uno.
+- **Tres servicios** (`admin`, `agenda` y `clinical`) detrás de un gateway, con una sola base dividida en un schema
+  por servicio y un usuario de base por servicio.
+- **El módulo del §9:** la bitácora encadenada con huellas SHA-256 y verificable.
+- **Kubernetes:** CloudNativePG con PgBouncer, los servicios, el HPA de `agenda` y una base secundaria síncrona con
+  failover automático.
 
-Lo que aún no existe se marca como **pendiente**.
+**Dónde está cada cosa que cambió desde la primera versión de la guía:**
+- la separación en servicios: [sección 2.4](#24-de-una-aplicación-a-servicios-); el servicio `app` ahora se llama
+  `admin`;
+- los schemas: [sección 4.2](#42-las-tablas-por-área-y-por-schema-);
+- un usuario de base por servicio, en lugar de `mc_app`: [sección 3.5](#35-un-usuario-por-servicio-);
+- las rutas de cada servicio: [Parte 8](#parte-8-la-aplicación-node);
+- Kubernetes y la réplica: [Parte 9b](#parte-9b-kubernetes).
 
-**Novedades de la separación en servicios:**
-- el servicio `app` ahora se llama `admin`;
-- las tablas están en los schemas `admin`, `agenda` y `clinical`;
-- la API se conecta con un usuario por servicio en lugar de `mc_app`.
-
-Están en la [sección 2.4](#24-de-una-aplicación-a-servicios-), la [sección 3.5](#35-un-usuario-por-servicio-)
-y la [sección 4.2](#42-las-tablas-por-área-y-por-schema-). El diseño completo está en `docs/diseno-servicios.md`.
+El diseño completo, con el porqué de cada decisión, está en `docs/diseno-servicios.md`.
 
 ## Cómo usar esta guía
 
@@ -41,7 +46,7 @@ y la [sección 4.2](#42-las-tablas-por-área-y-por-schema-). El diseño completo
 - [Parte 6. Keycloak y los tokens](#parte-6-keycloak-y-los-tokens) 🔴
 - [Parte 7. Redis](#parte-7-redis) 🟡
 - [Parte 8. La aplicación Node](#parte-8-la-aplicación-node) 🟡
-- [Parte 9. Documentación generada](#parte-9-documentación-generada) ⚪
+- [Parte 9. La documentación](#parte-9-la-documentación) 🟡
 - [Parte 9b. Kubernetes](#parte-9b-kubernetes) 🔴
 - [Parte 10. Estado de los requisitos](#parte-10-estado-de-los-requisitos)
 - [Parte 11. Autoevaluación](#parte-11-autoevaluación)
@@ -57,8 +62,8 @@ Levantar todo (la primera vez, copiar antes el `.env`):
 
 ```bash
 cp .env.example .env                    # solo la primera vez
-docker compose up -d --build --wait     # levanta los 4 servicios y espera a que estén sanos (~75 s)
-docker compose ps                       # los 4 deben decir (healthy)
+docker compose up -d --build --wait     # levanta los 7 servicios y espera a que estén sanos (~90 s)
+docker compose ps                       # los 7 deben decir (healthy)
 ```
 
 Hay dos formas de abrir una consola de la base. Dentro del contenedor `psql` no pide contraseña, porque la imagen de
@@ -92,6 +97,9 @@ Comandos de `psql` que van a usar:
 ```bash
 docker compose down -v && docker compose up -d --wait
 ```
+
+El mismo sistema corre en Kubernetes con `./k8s/deploy.sh` (Parte 9b). Compose y Kubernetes no corren a la vez sobre
+los mismos puertos.
 
 ---
 
@@ -141,7 +149,7 @@ La API también validará, pero para dar **mensajes claros** (un 409 con "espaci
 ### Preguntas de control
 
 1.1. ¿Por qué no basta con que la API revise si el espacio está libre antes de reservar?
-1.2. ¿Qué invariantes dependen todavía de código que no existe?
+1.2. ¿Qué invariantes no garantiza la base por sí sola, sino junto con la API?
 
 ---
 
@@ -154,10 +162,11 @@ La API también validará, pero para dar **mensajes claros** (un 409 con "espaci
 | `db` | `postgres:18-alpine` | Guarda todo, en dos bases separadas: `medicitas` (la app) y `keycloak` (estado de Keycloak) | `127.0.0.1:5432` |
 | `keycloak` | `quay.io/keycloak/keycloak:26.7` | Proveedor de identidad: guarda contraseñas, hace el login y emite los tokens | `127.0.0.1:8080` |
 | `gateway` | `nginx:1.28-alpine` | La única entrada de la API: reparte cada ruta al servicio que le toca, según su prefijo (sección 8.4). Desde la etapa 5 | `127.0.0.1:3000` |
-| `admin` | se construye con `services/admin/Dockerfile` (`node:24-alpine`) | Clínicas y usuarios (RF1, RF2); después servicios y profesionales (RF3, RF4). Hasta la etapa 1 se llamaba `app` | ninguno |
-| `agenda` | `services/agenda/Dockerfile` | Horarios, bloqueos, disponibilidad, citas y reportes. Desde la etapa 5, todavía sin rutas | ninguno |
-| `clinical` | `services/clinical/Dockerfile` | Pacientes, notas clínicas y bitácora. Desde la etapa 5, todavía sin rutas | ninguno |
+| `admin` | se construye con `services/admin/Dockerfile` (`node:24-alpine`) | Clínicas, usuarios, servicios y profesionales (RF1–RF4). Hasta la etapa 1 se llamaba `app` | ninguno |
+| `agenda` | `services/agenda/Dockerfile` | Horarios, bloqueos, disponibilidad, citas, historial, agenda del día y reportes (RF5–RF13, RF16, RF20, RF21) | ninguno |
+| `clinical` | `services/clinical/Dockerfile` | Pacientes, notas clínicas, bitácora y su verificación (RF14, RF15, RF18, RF19 y el §9) | ninguno |
 | `redis` | `redis:8.2-alpine` | Caché de la consulta de disponibilidad | ninguno |
+| `tests` | se construye con `tests/Dockerfile` | Corre la suite completa (`npm test`) contra la pila. Solo arranca con `--profile test` | ninguno |
 
 El diagrama está en `docs/diagramas.md`, sección 1.
 
@@ -224,7 +233,7 @@ El diseño completo, con el porqué de cada decisión, está en `docs/diseno-ser
 | 2 | Las tablas pasaron a los schemas `admin`, `agenda` y `clinical` (sección 4.2) | Hecha |
 | 3 | Un usuario de base por servicio, en lugar de `mc_app` (sección 3.5) | Hecha |
 | 4 | Traducir los errores `MC001`–`MC006` de los triggers a respuestas HTTP, y distinguir los `23P01` por la restricción que falló (sección 8.1) | Hecha |
-| 5 | Servicios `agenda` y `clinical`, y un gateway Nginx que reparte las rutas (secciones 8.3 y 8.4) | Hecha |
+| 5 | Servicios `agenda` y `clinical`, y un gateway Nginx que reparte las rutas (secciones 8.3 a 8.5) | Hecha |
 | 6 | Un solo comando de pruebas, `npm test`, también ejecutable dentro de un contenedor (`docs/diseno-servicios.md`, sección 9) | Hecha |
 
 **Qué es un workspace.** Un *workspace* de npm es un proyecto dentro de otro, en el mismo repositorio. La raíz
@@ -542,14 +551,20 @@ SELECT tstzrange('2026-11-02 09:00', '2026-11-02 09:30') && tstzrange('2026-11-0
 | Agenda | `professional_schedules`, `blockades`, `professional_contacts` | Horarios (RF5) y ausencias (RF6) |
 | Pacientes | `genders`, `patients`, `contact_types`, `patient_contacts` | Los contactos son dato sensible (RF18) |
 | Citas | `appointment_statuses`, `appointments`, `clinical_notes` | El corazón del sistema |
-| Bitácoras | `event_types`, `data_objects`, `audit_logs`, `severities`, `system_errors_logs` | Auditoría (RF18) y errores técnicos |
+| Bitácora | `event_types`, `data_objects`, `audit_logs` | Auditoría de accesos a datos sensibles (RF18) |
+
+Los errores internos de los servicios no tienen tabla: se escriben en la salida estándar de cada contenedor y se ven
+con `docker compose logs` o `kubectl logs`. Hasta el 2026-11-13 existía una tabla `system_errors_logs`, con su
+catálogo `severities`, pero ningún servicio escribía en ella, y el equipo decidió quitarla. Registrar un error en la
+base exige una transacción aparte, después del `ROLLBACK`. Dentro de la transacción que falla, el registro se
+borraría con todo lo demás. El porqué completo está en `docs/diseno-servicios.md`, sección 5, "Errores del sistema".
 
 **Desde la etapa 2, cada tabla vive en el schema del servicio que la escribe.** Un *schema* es como una carpeta
 dentro de la base: varias carpetas comparten el mismo servidor.
 
 | Schema | Servicio | Tablas |
 |---|---|---|
-| `admin` | clínicas, usuarios, catálogo (RF1–RF4) | las de clínicas, usuarios y permisos, geografía y servicios; además `professional_contacts`, `contact_types`, `severities` y `system_errors_logs` (19) |
+| `admin` | clínicas, usuarios, catálogo (RF1–RF4) | las de clínicas, usuarios y permisos, geografía y servicios; además `professional_contacts` y `contact_types` (17) |
 | `agenda` | horarios y citas (RF5–RF13, RF16, RF20, RF21) | `professional_schedules`, `blockades`, `appointment_statuses`, `appointments` (4) |
 | `clinical` | pacientes y bitácora (RF14, RF15, RF18, RF19) | `patients`, `patient_contacts`, `genders`, `clinical_notes`, `event_types`, `data_objects`, `audit_logs` (7) |
 
@@ -807,10 +822,10 @@ profesional y del servicio, y rechazaría la fila si alguna no coincide.
   Es un buen "trabajo futuro" para mencionar en la defensa.
 
 **E. Un esquema (o una base) por clínica.** Un esquema es como una carpeta de tablas dentro de la base. Cada clínica
-tendría su copia de las 30 tablas (`sanjose.appointments`, `cartago.appointments`) y mezclar sería imposible por
+tendría su copia de las 28 tablas (`sanjose.appointments`, `cartago.appointments`) y mezclar sería imposible por
 construcción.
 
-- Crear una clínica (RF1) significaría crear 30 tablas con el sistema corriendo.
+- Crear una clínica (RF1) significaría crear 28 tablas con el sistema corriendo.
 - Cada cambio al esquema se aplicaría N veces; con 500 clínicas, si falla en la 237, queda a medio migrar.
 - Los reportes de plataforma tendrían que juntar N tablas.
 - En cada petición habría que elegir la carpeta correcta; equivocarse es una fuga. El riesgo no desaparece, se muda.
@@ -1685,18 +1700,24 @@ docker compose exec redis redis-cli --no-auth-warning -a "$P" TTL <una clave dis
 
 ## Parte 8. La aplicación Node
 
-Desde la etapa 1, el código está en workspaces (sección 2.4). Desde la etapa 5 hay un paquete compartido, tres
-servicios y el gateway:
+El código está en workspaces (sección 2.4): un paquete compartido, tres servicios y el gateway.
 
 ```
-packages/common/src/      auth.js, db.js, errors.js     ← los usan los tres servicios
-services/admin/src/       app.js, server.js, accounts.js, keycloak.js, routes/clinics.js, routes/users.js
-services/agenda/src/      app.js, server.js, redis.js, agenda-version.js, availability.js, availability-cache.js,
-                          slots.js, routes/appointments.js, routes/availability.js, routes/agenda.js,
-                          routes/reports.js
-services/clinical/src/    app.js, server.js             ← sin rutas todavía
+packages/common/src/      auth.js, db.js, errors.js       ← los usan los tres servicios
+services/admin/src/       app.js, server.js, accounts.js, keycloak.js,
+                          routes/clinics.js (RF1), users.js (RF2), services.js (RF3), professionals.js (RF4)
+services/agenda/src/      app.js, server.js, redis.js, agenda-version.js, availability.js, availability-cache.js, slots.js,
+                          routes/schedules.js (RF5), blockades.js (RF6), availability.js (RF7, RF8),
+                          appointments.js (RF9–RF13, RF16), agenda.js (RF20), reports.js (RF21)
+services/clinical/src/    app.js, server.js, audit.js (escribe en la bitácora, RF18),
+                          routes/patients.js (RF14), clinical-notes.js (RF15), audit.js (RF19 y el §9)
 gateway/nginx.conf        el reparto de rutas
 ```
+
+Cada servicio se explica por separado: `admin` en la sección 8.2, `agenda` en la 8.3 y `clinical` en la 8.5. Todas
+las rutas siguen el mismo recorrido (sección 2.2) y las mismas reglas: el `clinic_id` sale del token, todo SQL pasa
+por `withTransaction`, los cuerpos se validan con zod en modo estricto y un recurso de otra clínica responde 404,
+igual que uno que no existe (I5). El contrato completo de cada ruta (entrada, salida y códigos) está en el README.
 
 ### 8.1 El código compartido (`packages/common`) 🔴
 
@@ -1737,8 +1758,8 @@ gateway/nginx.conf        el reparto de rutas
 
 ### 8.2 El servicio `admin` 🟡
 
-- **`app.js`:** Express 5 con `/health` (`SELECT 1`, 200 o 503), `/me`, `/clinics` (RF1) y `/users` (RF2). También
-  tiene un 404 para rutas inexistentes y un manejador de errores que nunca filtra detalles internos (500
+- **`app.js`:** Express 5 con `/health` (`SELECT 1`, 200 o 503), `/me`, `/clinics` (RF1), `/users` (RF2),
+  `/services` (RF3) y `/professionals` (RF4). También tiene un 404 para rutas inexistentes y un manejador de errores que nunca filtra detalles internos (500
   "Error interno").
 - **`server.js`:** abre el puerto y hace un **apagado ordenado**. Ante `SIGTERM` (lo que envía
   `docker compose stop`) deja de aceptar peticiones y cierra el pool antes de salir.
@@ -1752,23 +1773,94 @@ gateway/nginx.conf        el reparto de rutas
 - **Siempre consultas parametrizadas** (`$1`, `$2`), nunca texto del usuario pegado al SQL: así no hay inyección
   SQL. La única excepción es `SET LOCAL ROLE`, que antes valida el rol contra una lista fija.
 
-### 8.3 Los servicios `agenda` y `clinical` 🟡
+**El catálogo de servicios (RF3)** 🟡
 
-Se crearon en la etapa 5 con la misma forma que `admin`: su `package.json`, su Dockerfile, `app.js` con `/health`
-y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no tienen rutas; llegan en el bloque B.
+- **Rutas:** `GET` y `POST /services`, `GET` y `PATCH /services/{id}`, y `GET /services/specialties`, el catálogo
+  global de especialidades para saber qué `specialtyId` usar. Todas piden `services.manage`, que solo tiene el
+  administrador de la clínica.
+- **Un servicio** tiene nombre, duración en minutos (de 1 a 1440) y la especialidad que exige a quien lo atiende.
+- **Nunca se borra:** se da de baja con `isActive: false`, porque las citas pasadas lo siguen apuntando.
+- **Cambiar la duración no mueve las citas ya reservadas.** El fin de cada cita lo calculó y guardó el trigger al
+  reservarla (I4), y ese mismo trigger prohíbe cambiar el periodo de una cita existente (`MC004`). La duración nueva
+  solo se aplica a las reservas siguientes.
+
+**Los profesionales (RF4)** 🟡
+
+- **Rutas:** `GET` y `POST /professionals`, `GET` y `PATCH /professionals/{id}`, y
+  `PUT /professionals/{id}/services`, que reemplaza la lista de servicios habilitados. Todas piden
+  `professionals.manage` (solo el administrador).
+- **Un profesional también es un usuario que inicia sesión.** Por eso `POST /professionals` sigue el mismo orden que
+  el alta de usuarios (`createAccount`):
+  1. **Valida primero en la base:** que las especialidades existan, que los servicios sean de la clínica y estén
+     activos (si no, 404, I5), y que el profesional tenga la especialidad que exige cada servicio (si no, 400).
+  2. **Crea la cuenta en Keycloak** con el rol `professional`.
+  3. **Inserta en una sola transacción** `users`, `professionals`, sus especialidades, sus servicios habilitados y sus
+     contactos. Si la base falla, se borra la cuenta de Keycloak: el sistema falla cerrado.
+
+  Se valida antes de tocar Keycloak para no crear y borrar cuentas por un simple error de datos.
+- **Quitar un servicio o una especialidad no borra la fila: la marca con `is_active = false`.** Las citas apuntan a
+  `services_per_professionals` con una FK compuesta, así que un `DELETE` fallaría con `23503` en cuanto el
+  profesional tuviera una cita histórica de ese servicio. Volver a habilitarlo reactiva la misma fila
+  (`ON CONFLICT … DO UPDATE`). Lo que se sacrifica: la disponibilidad y la reserva filtran siempre por `is_active`.
+- **Dar de baja a un profesional** (`isActive: false`) lo desactiva primero en la base y después en Keycloak. Si
+  Keycloak falla, la API responde 502, pero la base ya lo bloquea: `identify` le responde 403.
+- **Las pruebas (`tests/integration/services-professionals.test.js`, 11):** el alta y la actualización de cada uno;
+  un servicio que exige una especialidad que el profesional no tiene (400); que la baja revoca el acceso en la API y
+  en Keycloak; que recepción y los profesionales reciben 403; y el aislamiento (otra clínica responde 404, y un
+  `clinicId` en el cuerpo, 400).
+
+### 8.3 El servicio `agenda` 🔴
+
+`agenda` y `clinical` se crearon en la etapa 5 con la misma forma que `admin`: su `package.json`, su Dockerfile,
+`app.js` con `/health` y el manejador de errores, y `server.js` con el apagado ordenado.
 
 - **Cada uno entra a la base con su propio usuario:** `mc_agenda_svc` y `mc_clinical_svc` (sección 3.5).
-- **Sus prefijos ya exigen token.** `agenda` protege `/schedules`, `/blockades`, `/availability`, `/appointments`,
-  `/agenda` y `/reports`; `clinical` protege `/patients`, `/clinical-notes` y `/audit`. Aunque no haya rutas:
+- **Todos sus prefijos exigen token.** `agenda` atiende `/schedules`, `/blockades`, `/availability`, `/appointments`,
+  `/agenda` y `/reports`; `clinical`, `/patients`, `/clinical-notes` y `/audit`. En cualquiera de ellos:
   - sin token → 401;
   - con el token de la plataforma → 403 "Este servicio no atiende a su rol", sin consultar la base;
-  - con un usuario válido → 404, porque la ruta todavía no existe.
+  - con un rol sin el permiso de la ruta → 403;
+  - con una ruta que no existe → 404.
 - **Header `X-MediCitas-Service`.** Los tres servicios lo agregan con su nombre, para ver quién contestó detrás
   del gateway.
 - **El `npm ci` de cada imagen** funciona aunque la imagen solo tenga el `package.json` de su propio servicio y no
   el de los otros dos. Se comprobó al crearlos.
 
-**La reserva (RF9), en `agenda` desde la rama `reservas`** 🔴
+**Horarios y bloqueos (RF5, RF6)** 🔴
+
+- **Rutas.**
+  - RF5: `GET` y `POST /schedules`, y `PATCH` y `DELETE /schedules/{id}`.
+  - RF6: `GET` y `POST /blockades`, `DELETE /blockades/{id}` y `GET /blockades/conflicts`.
+- **Permisos de dos niveles.**
+  - `schedules.manage`: el administrador maneja la agenda de cualquier profesional de su clínica.
+  - `schedules.manage_own`: el profesional solo la suya; con la de otro recibe 403.
+  - Para leer horarios y bloqueos alcanza también con los permisos de recepción.
+- **En hora local de la clínica.** El cliente manda la fecha y las horas como las ve la clínica (`2026-11-20`,
+  `08:00`), y la base las convierte en un `tstzrange` de instantes absolutos con `AT TIME ZONE clinics.time_zone`. Se
+  hace en PostgreSQL porque ya conoce las zonas horarias (incluidos los cambios de horario); en JavaScript habría que
+  manejar los desfases a mano o agregar una biblioteca.
+- **Varios bloques por día, sin cruzarse** (una jornada partida son dos bloques). La ruta revisa el cruce antes de
+  insertar para responder un 409 con un mensaje claro, pero la garantía real, también bajo concurrencia, es la
+  restricción `EXCLUDE` `ex_schedules_overlap`.
+- **No se puede dejar una cita fuera del horario.** Si al recortar, mover o borrar un bloque alguna de sus citas
+  reservadas quedaría fuera de lo que queda del bloque, el trigger `trg_professional_schedules_guard` lo impide con
+  `MC006` (409). Recortar sin tocar las citas sí se puede. Es I3 visto desde el horario (sección 4.7).
+- **Un bloqueo no cancela citas.** RF6 pide conservarlas para reprogramarlas. `POST /blockades` inserta el bloqueo y,
+  en la misma transacción, devuelve en `conflicts` las citas reservadas que se cruzan con él. Después,
+  `GET /blockades/conflicts` las vuelve a listar para que recepción las reprograme. Mientras tanto siguen reservadas;
+  el bloqueo solo impide reservas nuevas (I3, `MC001`).
+- **Un bloqueo puede durar un día** (`date`) **o varios** (`startDate` y `endDate`), por ejemplo unas vacaciones.
+- **Toda escritura invalida la caché** con `bumpAgendaVersion`, después del COMMIT y con todos los días afectados. Si
+  un bloque cambia de fecha, se invalidan el día viejo y el nuevo (I8).
+- **Las pruebas (`tests/integration/schedules-blockades.test.js`, 6):**
+  - una jornada partida creada por la API aparece en la disponibilidad, en hora local;
+  - dos bloques cruzados responden 409;
+  - recortar un bloque con citas responde `MC006`;
+  - un bloqueo sobre una cita no la cancela y la lista en `conflicts`;
+  - `manage_own` solo alcanza para la agenda propia;
+  - el aislamiento entre clínicas.
+
+**La reserva (RF9)** 🔴
 
 - **`routes/appointments.js`: `POST /appointments`,** con el permiso `appointments.manage`. Hace todo en una sola
   transacción:
@@ -1789,11 +1881,11 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   diez clientes a la vez.
 - **La prueba discrimina.** Se comprobó quitando la restricción `ex_appointments_professional` en una copia aislada:
   sin ella, la API concedió las dos reservas (`[201, 201]`) y, con diez clientes, las diez. Con ella, siempre una.
-- **Cómo preparan sus datos las pruebas.** Como la ruta de horarios (RF5) todavía no existe, `tests/integration/db.js`
-  se conecta como `mc_owner` solo para crear el bloque de horario en un día lejano y único, y para contar las citas.
-  La reserva en sí siempre pasa por la API.
+- **Cómo preparan sus datos las pruebas.** `tests/integration/db.js` se conecta como `mc_owner` solo para crear el
+  bloque de horario en un día lejano y único (`addScheduleBlock`), y para contar las citas. Así cada prueba elige el
+  día y la hora exactos que necesita, sin depender de otras. La reserva en sí siempre pasa por la API.
 
-**Cancelar y registrar el desenlace (RF11, RF12, RF13), también en la rama `reservas`** 🔴
+**Cancelar y registrar el desenlace (RF11, RF12, RF13)** 🔴
 
 - **Dos rutas de acción, no un `PATCH` genérico.** `POST /appointments/{id}/cancel` (permiso
   `appointments.manage`, con el motivo obligatorio) y `POST /appointments/{id}/outcome` (permiso
@@ -1821,7 +1913,7 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   ya empezó (para RF12) se prepara en la base con `addAppointment` en un día del pasado lejano (`freePastDay`),
   porque la API no permite reservar en el pasado. Los triggers igual corren sobre ese `INSERT`.
 
-**Reprogramar (RF10), también en la rama `reservas`** 🔴
+**Reprogramar (RF10)** 🔴
 
 - **`POST /appointments/{id}/reschedule`,** con el permiso `appointments.manage`. Recibe el nuevo inicio y,
   opcionalmente, otro profesional que atienda el mismo servicio. El paciente, el servicio y la descripción se
@@ -1855,7 +1947,7 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
 - **Después del COMMIT se suben dos versiones de agenda:** la del día que se libera y la del día que se ocupa, que
   pueden ser de dos profesionales distintos (I8).
 
-**Disponibilidad (RF7, RF8), también en la rama `reservas`, todavía sin caché** 🔴
+**Disponibilidad (RF7, RF8): el cálculo** 🔴 (la caché va en el punto siguiente)
 
 - **Dos rutas, con el permiso `availability.read`:**
   - RF7: `GET /availability/professionals/{id}?serviceId=…&date=…`, los espacios de un profesional en un día;
@@ -1893,8 +1985,8 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   - Comparan los espacios con la grilla esperada en estos casos: un día normal, una jornada partida con dos bloques
     seguidos y un bloqueo.
   - Las de I7 e I8 consultan, reservan, cancelan o reprograman uno de los espacios devueltos, y vuelven a consultar:
-    la siguiente consulta tiene que reflejar el cambio. Cuando llegue la caché, estas mismas pruebas demostrarán que
-    no devuelve espacios viejos.
+    la siguiente consulta tiene que reflejar el cambio. Como la consulta pasa por la caché, estas mismas pruebas
+    demuestran también que la caché no devuelve espacios viejos.
   - **Discriminan.** Se comprobó en una copia aislada contando las citas de todos los estados, no solo las
     reservadas: las dos pruebas de I7 fallaron y las demás siguieron pasando.
 - **Medición de carga sin caché (k6, README).** Con 50 usuarios simultáneos responde unas 716 consultas por segundo,
@@ -1902,7 +1994,7 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   PostgreSQL usaba unos 2,7 núcleos. Por eso, para escalar, además de la caché hacen falta varias copias de `agenda`
   (el HPA).
 
-**La caché de RF7, en la rama `cache-redis`** 🔴 (el mecanismo está en la Parte 7)
+**La caché de RF7** 🔴 (el mecanismo está en la Parte 7)
 
 - **Las rutas siguen tres pasos.** Primero leen Redis (`readCachedGaps`). Después hacen la transacción en la base:
   la validación de siempre y, solo para los pares que faltaron, `computeGaps`. Por último, después del COMMIT,
@@ -1919,14 +2011,14 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   de invalidación, y las demás siguieron pasando.
 - **Un detalle de las pruebas.** Los helpers de `db.js` crean horarios directo en la base y no suben la versión. Por
   eso las pruebas crean el horario antes de la primera consulta, y las consultas a días que se quedan sin horario
-  usan fechas del año 2000, que `freeDay` nunca elige. En producción lo resuelve la ruta de RF5, que subirá la
-  versión.
+  usan fechas del año 2000, que `freeDay` nunca elige. En producción no pasa: la ruta de RF5 sí sube la versión
+  después del COMMIT.
 - **Medición con caché (README).**
   - Con una copia de `agenda`: unas 963 consultas por segundo, frente a 716 sin caché, y p95 de 81 ms, frente a 111.
   - Con tres copias: unas 2 415 por segundo, frente a 1 714, y la base baja de unos 8,2 núcleos a 5,6.
   - La base hace la mitad del trabajo por consulta, y cada copia de `agenda` sigue limitada por su CPU.
 
-**La agenda del día y el conteo por estado (RF20, RF21), en la rama `agenda-reportes`** 🔴
+**La agenda del día y el conteo por estado (RF20, RF21)** 🔴
 
 - **RF20: `GET /agenda?date=…`**, con un `professionalId` opcional y el permiso `agenda.read`.
   - Muestra las citas que empiezan ese día en la hora local de la clínica, en todos los estados, ordenadas por hora.
@@ -1960,6 +2052,19 @@ y el manejador de errores, y `server.js` con el apagado ordenado. Todavía no ti
   - El `professionalId` opcional de RF21 hace exactos los conteos de la prueba. Con toda la clínica, otras pruebas
     que corren al mismo tiempo podrían sumar citas a ese día.
 
+**El historial del paciente (RF16)** 🟡
+
+- **`GET /appointments?patientId=…`,** con el permiso `patient_history.read` (administrador, recepción y profesional).
+- **Primero comprueba que el paciente sea de la clínica del token** (si no, 404, I5). Después devuelve todas sus citas,
+  en todos los estados y en orden cronológico, con el profesional, el servicio, el motivo de cancelación y
+  `rescheduledFromId`, que permite seguir la cadena de reprogramaciones. Usa el índice
+  `ix_appointments_patient_start`.
+- **Vive en `agenda` aunque el paciente sea de `clinical`,** porque lo que devuelve son citas, y `agenda` puede leer
+  `clinical.patients`. Pero **nunca lee los contactos del paciente:** si lo hiciera, tendría que registrar esa lectura
+  en la bitácora de `clinical` (RF18), que no es su schema.
+- **Las pruebas** están en `tests/integration/patients-history.test.js`: todos los estados en orden, y que el paciente
+  de otra clínica responde 404.
+
 ### 8.4 El gateway 🔴
 
 El **gateway** es la única puerta de entrada de la API: un Nginx que escucha en el puerto 3000 y reenvía cada
@@ -1981,15 +2086,191 @@ por petición.
   Se eligió así para no escribir en el archivo la dirección del DNS, que es distinta en cada entorno.
 - **Keycloak no pasa por el gateway:** si cambiara su dirección, cambiaría el `iss` de los tokens.
 
+### 8.5 El servicio `clinical` 🔴
+
+`clinical` guarda los datos más sensibles del sistema: los contactos de los pacientes y las notas clínicas. Por eso
+casi todo lo que hace pasa por la **bitácora**: registra cada acceso a esos datos (RF18), deja consultarla (RF19) y
+verificar que nadie la alteró (módulo del §9, sección 4.7).
+
+**La bitácora se escribe en la misma transacción (RF18)** 🔴
+
+- **`logAuditEvent(client, {…})`** (`services/clinical/src/audit.js`) inserta una fila en `audit_logs` con quién, qué
+  evento (`read`, `create`, `update` o `delete`), sobre qué tipo de dato (contacto o nota), cuál registro, de qué
+  paciente y una descripción.
+- **Va en la misma transacción que el acceso,** con el mismo `client`. Si la lectura se confirma, su registro también;
+  si algo falla, no queda ninguno de los dos. Se descartó registrar después del COMMIT o en un archivo aparte: una
+  caída entre los dos pasos dejaría un acceso sin registro.
+- **La descripción dice qué se hizo, nunca el dato.** Dice "Lectura de contacto (email) del paciente", pero no cuál es
+  el correo, y nunca copia el texto de una nota: el administrador lee la bitácora, pero no tiene permiso para leer las
+  notas.
+- **Cada fila pasa por el trigger de la cadena de huellas** (§9, sección 4.7), que toma un candado por clínica. Cuesta
+  cerca de un 26 % de las lecturas auditadas por segundo dentro de una misma clínica (`docs/diseno-servicios.md` §11).
+
+**Los pacientes (RF14)** 🔴
+
+- **Rutas:** `GET /patients` (el directorio), `GET /patients/{id}` (el detalle, con los contactos), `POST /patients`,
+  `PATCH /patients/{id}` y `GET /patients/genders`.
+  - Para leer, `patients.read` (administrador, recepción y profesional).
+  - Para escribir, `patients.write` (administrador y recepción; el profesional recibe 403).
+- **El directorio no trae contactos; el detalle sí.** Abrir el detalle registra una lectura por cada contacto, y el
+  directorio no lee contactos ni escribe en la bitácora. La alternativa descartada era incluirlos en el listado: buscar
+  un nombre en una clínica de 80 pacientes habría escrito más de cien filas en la bitácora. Lo que se sacrifica: para
+  ver los contactos hay que abrir el detalle.
+- **Los contactos se reemplazan como lista.** En `PATCH`, la lista enviada reemplaza a la vigente: los que ya no están
+  pasan a `is_active = false` (evento `delete`) y los nuevos se insertan (evento `create`). Es una **baja lógica**
+  por dos motivos: los perfiles de la aplicación no tienen permiso de `DELETE` sobre `patient_contacts`, y la bitácora
+  apunta a esa fila (`object_id`), así que borrarla dejaría entradas que apuntan a nada.
+- **La identificación es única dentro de cada clínica** (`uq_patients_clinic_identification`). Una cédula repetida en
+  la misma clínica responde 409, pero se permite en otra: cada clínica tiene sus propios pacientes.
+- **Las pruebas (`tests/integration/patients-history.test.js`, 7, junto con RF16):** que cada acceso a los contactos
+  queda en la bitácora; la baja lógica al actualizar; la identificación repetida; que el profesional no escribe; y el
+  aislamiento entre clínicas.
+
+**Las notas clínicas (RF15)** 🔴
+
+- **Rutas:** `POST /clinical-notes`, `GET /clinical-notes/{id}`, `GET /clinical-notes?appointmentId=…` y
+  `PATCH /clinical-notes/{id}`. Todas piden `clinical_notes.write_own`, que solo tiene el profesional: el administrador
+  y recepción reciben 403 en todas, incluso para leer.
+- **"Solo la escribe el profesional que atendió" lo revisa la API.** La base sabe que solo un profesional puede
+  escribir notas (los GRANT de `mc_professional`), pero no sabe cuál atendió cada cita. La función
+  `loadOwnAttendedAppointment` lo resuelve con una sola consulta, dentro de la transacción: busca la cita por clínica,
+  por id y con `professional_id` igual al usuario del token.
+  - Si no hay fila, responde **404**. Puede ser que la cita no exista, que sea de otra clínica o que sea de otro
+    profesional, y en los tres casos la respuesta es la misma.
+  - Si la cita no está atendida, responde **409**.
+- **404 y no 403 para otro profesional.** Un 403 diría "esa cita existe, pero no es tuya": revelaría información. Con
+  el 404, otro profesional no puede distinguir una nota ajena de una que no existe (I5).
+- **No hace falta un trigger ni un candado.** Nada puede volver falsa la revisión mientras corre la transacción:
+  "atendida" es un estado final (`MC002` impide cambiarlo) y el profesional de una cita nunca cambia (`MC004`). Se
+  descartó un trigger porque repetiría una regla que la concurrencia ya no puede romper, y además el trigger no conoce
+  al usuario del token: habría que pasárselo por una variable de sesión.
+- **Una nota por cita** (`UNIQUE (appointment_id)`). Una segunda responde 409 e indica usar `PATCH`.
+- **La nota se puede corregir,** solo por su autor y con `PATCH`, y cada corrección queda en la bitácora como
+  `update`. Se descartaron las notas inmutables: son más estrictas, pero obligan a corregir por fuera del sistema, y en
+  la práctica clínica las notas se corrigen.
+- **Cada lectura, creación y corrección** deja su fila en la bitácora, sin el texto.
+- **Las pruebas (`tests/integration/clinical-notes.test.js`, 9):**
+  - el ciclo completo de la autora, con la bitácora;
+  - que la bitácora no guarda el texto;
+  - el 403 de recepción y del administrador;
+  - el 404 de otro profesional y de otra clínica;
+  - el 409 de una cita no atendida y de una segunda nota;
+  - que la cadena de huellas sigue íntegra.
+
+**La consulta de la bitácora (RF19)** 🔴
+
+- **`GET /audit`,** con el permiso `audit.read`, que solo tiene el administrador de la clínica.
+  - Los filtros son opcionales: `userId`, `patientId`, `from` y `to`.
+  - Las fechas son días (`YYYY-MM-DD`) en la hora local de la clínica e incluyen los dos extremos, igual que en RF21.
+  - Responde `{ entries, nextBeforeId }`. Cada entrada dice quién (con su nombre), qué evento, sobre qué dato y qué
+    paciente, la descripción y la fecha.
+- **Paginación por cursor.**
+  - Las entradas vienen ordenadas por `log_id`, de la más nueva a la más vieja: 50 por defecto (`limit`) y 200 como
+    máximo.
+  - La página siguiente se pide con `beforeId=<nextBeforeId>`, que trae las de `log_id` menor.
+  - `nextBeforeId` vale `null` cuando no hay más.
+- **Por qué un cursor y no `offset`.**
+  - Con `offset`, la base tiene que recorrer y descartar todas las páginas anteriores.
+  - Y como la bitácora crece con cada lectura, una entrada que llega entre dos páginas haría repetir filas.
+  - Con el cursor, lo nuevo queda "arriba" y no mueve las páginas siguientes.
+  - Lo que se sacrifica: no se puede saltar directo a la página 5.
+- **Por qué `log_id` y no `created_at`.** `now()` es la hora de **inicio** de cada transacción. Así, dos transacciones
+  simultáneas pueden quedar con un `created_at` en orden distinto al real. `log_id` es el orden de la cadena de
+  huellas, y la consulta recorre el índice `ix_audit_clinic_log (clinic_id, log_id)`.
+- **No tiene tope de días,** a diferencia de RF21: la paginación ya limita el tamaño de cada respuesta.
+- **Aislamiento (I5).** Un filtro con un usuario o un paciente de otra clínica no encuentra nada, porque todo se
+  filtra por la clínica del token.
+- **`GET /audit/verify`** (§9) recorre la cadena de huellas y dice si alguien la alteró (sección 4.7).
+- **Las pruebas (`tests/integration/audit-query.test.js`, 8):**
+  - el orden;
+  - cada filtro;
+  - el rango de fechas en hora local;
+  - que la paginación recorre todo sin repetir ni saltar;
+  - el permiso y el aislamiento.
+
+### Experimentos
+
+**E44. Abrir un paciente queda en la bitácora; el directorio no.** Con la pila de Compose arriba:
+
+```bash
+API=http://localhost:3000; KC=http://localhost:8080
+tok() { curl -s -X POST $KC/realms/medicitas/protocol/openid-connect/token -d grant_type=password \
+  -d client_id=medicitas-api -d username=$1 -d password=medicitas | jq -r .access_token; }
+ADMIN=$(tok admin.sanjose); RECEP=$(tok recepcion.sanjose)
+curl -s "$API/audit?patientId=1&limit=3" -H "Authorization: Bearer $ADMIN" | jq -c '.entries[] | {logId, userName, event, dataObject, description}'
+curl -s "$API/patients" -H "Authorization: Bearer $RECEP" > /dev/null          # el directorio
+curl -s "$API/patients/1" -H "Authorization: Bearer $RECEP" | jq -c .contacts   # el detalle, con 2 contactos
+curl -s "$API/audit?patientId=1&limit=3" -H "Authorization: Bearer $ADMIN" | jq -c '.entries[] | {logId, userName, event, dataObject, description}'
+```
+
+Predigan cuántas filas nuevas aparecen. Deberían ser dos lecturas de `patient_contact` de Pablo Arias (recepción),
+una por contacto, con el tipo de contacto pero sin su valor. El directorio no agregó ninguna.
+
+Ahora la paginación: pidan dos entradas y después la página siguiente con el cursor.
+
+```bash
+curl -s "$API/audit?limit=2" -H "Authorization: Bearer $ADMIN" | jq -c '{ids: [.entries[].logId], nextBeforeId}'
+curl -s "$API/audit?limit=2&beforeId=<nextBeforeId>" -H "Authorization: Bearer $ADMIN" | jq -c '{ids: [.entries[].logId], nextBeforeId}'
+```
+
+**E45. Solo la autora lee su nota.** Las notas del seed son de la clínica de Bogotá. La nota de la cita 1 la escribió
+Valentina Restrepo, y Santiago Ospina es otro profesional de la misma clínica. Con `tok` del experimento anterior:
+
+```bash
+VALE=$(tok valentina.restrepo); SANTI=$(tok santiago.ospina); RB=$(tok recepcion.bogota); AB=$(tok admin.bogota)
+curl -s -w ' → %{http_code}\n' "$API/clinical-notes?appointmentId=1" -H "Authorization: Bearer $VALE" | head -c 160; echo
+curl -s -w ' → %{http_code}\n' "$API/clinical-notes?appointmentId=1" -H "Authorization: Bearer $SANTI"
+curl -s -w ' → %{http_code}\n' "$API/clinical-notes?appointmentId=1" -H "Authorization: Bearer $RB"
+curl -s -w ' → %{http_code}\n' "$API/clinical-notes/1" -H "Authorization: Bearer $AB"
+curl -s "$API/audit?patientId=173&limit=1" -H "Authorization: Bearer $AB" | jq -c '.entries[] | {userName, event, dataObject, description}'
+```
+
+Predigan cada código antes de ejecutar. Deberían salir:
+- **200** para la autora;
+- **404** para Santiago, como si la nota no existiera;
+- **403** para recepción y para el administrador.
+
+El administrador, que no puede leer la nota, sí ve en la bitácora que Valentina la leyó, pero no lo que dice.
+
+### Preguntas de control
+
+8.1. ¿Por qué el directorio de pacientes no trae los contactos y el detalle sí?
+8.2. Otro profesional de la misma clínica pide la nota de una cita que no atendió. ¿Qué responde la API, y por qué no
+un 403?
+8.3. ¿Por qué no hace falta un trigger ni un candado para garantizar que la nota se escriba solo en una cita propia y
+atendida?
+8.4. ¿Por qué la bitácora se pagina con un cursor sobre `log_id`, y no con `offset` ni por `created_at`?
+8.5. Un administrador recorta el horario de un profesional y deja fuera una cita reservada. ¿Qué pasa, y qué lo
+impide?
+8.6. ¿Por qué quitarle un servicio a un profesional no borra su fila en `services_per_professionals`?
+
 ---
 
-## Parte 9. Documentación generada
+## Parte 9. La documentación
 
-- **`docs/diagramas.md`** ⚪: diagramas en Mermaid (GitHub los dibuja): arquitectura, ER general y ER por área.
-- **`docs/diccionario-datos.md`** 🟡: lo genera `./db/tools/generar-diccionario.sh` a partir de la base en
-  ejecución. Las descripciones son comentarios guardados en la propia base (`db/sql/05-comments.sql`); los tipos,
-  llaves e índices se leen del catálogo de Postgres. Así el diccionario no puede quedar desactualizado respecto del
-  esquema. Para cambiar una descripción, se edita `05-comments.sql`, se aplica y se regenera.
+Lo que pide el enunciado (§12) y dónde está. Conviene saber qué hay en cada documento, porque en la defensa pueden
+pedir que muestren algo.
+
+| Documento | Qué tiene | Cuándo abrirlo |
+|---|---|---|
+| `README.md` | Arranque en Compose y en Kubernetes, el modelo de datos comentado, el contrato de cada ruta (entrada, salida y códigos), `EXPLAIN ANALYZE` de los índices y las mediciones de carga | Para mostrar cómo se usa el sistema |
+| `docs/diseno.md` | La entrada al diseño: arquitectura, modelo, multi-tenancy y aislamiento, con enlaces al detalle | Para las preguntas garantizadas de la defensa |
+| `docs/diseno-servicios.md` | Cada decisión con su problema, lo elegido, lo descartado y lo que se sacrifica: servicios, gateway, usuarios de base, schemas, escala, Kubernetes, caché, pruebas y el §9 | Para el porqué de cualquier decisión |
+| `docs/comparacion-arquitecturas.md` | Las tres arquitecturas que se compararon y la caché | Para "¿por qué no microservicios?" |
+| `docs/informe-pruebas.md` | Cómo se ejecutan las pruebas, el resultado oficial, las más importantes, la matriz de cobertura y las mediciones | Para mostrar que cada RF e invariante tiene su prueba |
+| `docs/diagramas.md` ⚪ | Diagramas en Mermaid (GitHub los dibuja): arquitectura, ER general y ER por área | Para el diagrama entidad-relación |
+| `docs/diccionario-datos.md` 🟡 | Cada tabla y columna con su tipo, llaves e índices | Para buscar una columna |
+| `requests/medicitas.http` | La colección de peticiones: 59 que recorren todas las rutas en orden, con el código esperado de cada una | Para probar la API a mano |
+| `Uso_de_IA.md` | Cómo se usó la IA, en qué partes, qué decidió el grupo y qué se verificó a mano | Para las preguntas sobre el uso de IA |
+
+**Tres de esos documentos se generan solos,** y por eso no pueden quedar desactualizados:
+- **El diccionario de datos** lo genera `./db/tools/generar-diccionario.sh` a partir de la base en ejecución. Las
+  descripciones son comentarios guardados en la propia base (`db/sql/05-comments.sql`); los tipos, llaves e índices
+  se leen del catálogo de Postgres. Para cambiar una descripción, se edita `05-comments.sql`, se aplica y se regenera.
+- **La matriz de cobertura** del informe la genera `node tests/tools/matriz-cobertura.mjs --write` a partir de los
+  nombres de las pruebas, que empiezan con los RF e invariantes que cubren ("RF9, I5: …").
+- **La colección** no se genera, pero se comprueba sola: `node tests/tools/correr-coleccion.mjs` ejecuta las 59
+  peticiones sobre una base recién creada y compara cada respuesta con el código que anuncia.
 
 **E31. Las descripciones viven en la base** (como `mc_owner`):
 
@@ -2389,6 +2670,60 @@ Dice para qué aplicación se emitió el token. La API rechazará tokens cuyo `a
 token emitido para otra aplicación del mismo Keycloak no sirva contra la nuestra.
 </details>
 
+<details><summary><b>8.1</b> ¿Por qué el directorio de pacientes no trae los contactos y el detalle sí?</summary>
+
+Porque cada lectura de un contacto tiene que quedar en la bitácora (RF18). Si el directorio trajera los contactos,
+buscar un nombre en una clínica de 80 pacientes escribiría más de cien filas de bitácora por lecturas que nadie quiso
+hacer, y la bitácora dejaría de servir para saber quién miró qué. Separando el directorio del detalle, solo se registra
+cuando alguien abre a un paciente concreto. El costo es una petición más para ver los contactos.
+</details>
+
+<details><summary><b>8.2</b> Otro profesional de la misma clínica pide la nota de una cita que no atendió. ¿Qué responde la API, y por qué no un 403?</summary>
+
+404, el mismo que recibiría por una nota que no existe. La consulta busca la nota de una cita de esa clínica **y de ese
+profesional**; si no hay fila, no distingue entre "no existe" y "existe, pero no es tuya". Un 403 revelaría que la
+nota existe, y eso ya es información sobre un paciente ajeno. Es la misma regla que I5 aplica entre clínicas. En
+cambio, recepción y el administrador reciben 403: a ellos les falta el permiso `clinical_notes.write_own`, y eso no
+revela nada de ninguna nota en particular.
+</details>
+
+<details><summary><b>8.3</b> ¿Por qué no hace falta un trigger ni un candado para garantizar que la nota se escriba solo en una cita propia y atendida?</summary>
+
+Porque nada puede volver falsa esa revisión mientras corre la transacción. "Atendida" es un estado final: el trigger
+de estados (`MC002`) impide sacar a una cita de ahí. Y el profesional de una cita no cambia nunca: el trigger de I4
+(`MC004`) lo prohíbe. Así que, si la consulta ve "propia y atendida", lo sigue siendo al hacer el COMMIT. Es distinto
+de la reserva, donde otra transacción sí podía ocupar el espacio entre la revisión y el `INSERT`, y por eso ahí la
+garantía la da la base con el `EXCLUDE`.
+</details>
+
+<details><summary><b>8.4</b> ¿Por qué la bitácora se pagina con un cursor sobre log_id, y no con offset ni por created_at?</summary>
+
+**Contra `offset`:** para dar la página 50, la base recorre y descarta las 49 anteriores. Además, la bitácora crece
+con cada lectura: si entra una fila nueva mientras alguien pagina, todo se corre un lugar, y la página siguiente repite
+una entrada. Con `beforeId`, cada página continúa exactamente donde terminó la anterior.
+
+**Contra `created_at`:** `now()` devuelve la hora de **inicio** de la transacción. Una transacción que empezó antes
+pero confirmó después queda con un `created_at` menor que otra que en realidad se registró primero. `log_id` es el
+orden real, el mismo de la cadena de huellas, y tiene su índice `(clinic_id, log_id)`.
+</details>
+
+<details><summary><b>8.5</b> Un administrador recorta el horario de un profesional y deja fuera una cita reservada. ¿Qué pasa, y qué lo impide?</summary>
+
+La API responde 409 y el horario no cambia. Lo impide el trigger `trg_professional_schedules_guard`: antes de modificar
+o borrar un bloque, busca las citas reservadas que caían en él y revisa que sigan enteras dentro de lo que queda del
+bloque (nada, si se borra). Si alguna queda fuera, aborta con `MC006`, y la API lo traduce a 409. Recortar el bloque
+sin tocar sus citas sí está permitido. Es I3 visto desde el otro lado: el trigger de las citas impide reservar fuera
+del horario, y este impide mover el horario debajo de una cita.
+</details>
+
+<details><summary><b>8.6</b> ¿Por qué quitarle un servicio a un profesional no borra su fila en services_per_professionals?</summary>
+
+Porque las citas apuntan a esa fila con una FK compuesta `(clinic_id, professional_id, service_id)`. Si el profesional
+alguna vez atendió ese servicio, un `DELETE` fallaría con `23503`, y aunque no fallara, se perdería el vínculo de las
+citas pasadas. Por eso la fila se marca con `is_active = false`, y volver a habilitar el servicio la reactiva. El costo
+es que la disponibilidad y la reserva tienen que filtrar siempre por `is_active`.
+</details>
+
 <details><summary><b>9b.1</b> La principal se cae justo después de confirmar una reserva. ¿La cita existe en la nueva principal?</summary>
 
 Sí. La replicación es síncrona: la principal solo responde el COMMIT cuando la secundaria confirmó que recibió el
@@ -2515,7 +2850,22 @@ curl -s -X POST http://localhost:8080/realms/medicitas/protocol/openid-connect/t
 # Pruebas (unitarias y de integración)
 npm test                                     # desde tu máquina: Node 24, npm ci y la pila arriba
 npm run test:unit                            # solo las unitarias, sin la pila
-docker compose --profile test run --rm tests # dentro de un contenedor: solo hace falta Docker
+docker compose --profile test run --build --rm tests   # dentro de un contenedor: solo hace falta Docker
+node tests/tools/correr-coleccion.mjs        # las 59 peticiones de la colección, sobre una base recién creada
+node tests/tools/matriz-cobertura.mjs        # la matriz de cobertura (con --write la guarda en el informe)
+
+# Carga de RF7 con k6 (Compose)
+docker run --rm -i --network medicitas_default grafana/k6:1.3.0 run - < tests/load/availability.js
+
+# Kubernetes (minikube); no a la vez que Compose en los mismos puertos
+minikube start --cpus=6 --memory=8192
+./k8s/deploy.sh                              # despliega todo; se puede repetir
+./k8s/run-tests.sh                           # la suite completa dentro del clúster
+./k8s/load-test.sh                           # carga de RF7 y el HPA escalando agenda
+./k8s/failover-test.sh                       # tumba la base principal y comprueba que no se pierde nada
+kubectl -n medicitas get cluster,pooler,pods,hpa
+kubectl -n medicitas port-forward svc/gateway 3000:3000      # la API en localhost:3000
+kubectl -n medicitas port-forward svc/keycloak 8080:8080     # Keycloak en localhost:8080
 ```
 
 ---
@@ -2530,7 +2880,10 @@ docker compose --profile test run --rm tests # dentro de un contenedor: solo hac
 | 4 | 4.6 | Citas y concurrencia: la pregunta rectora | 1 h |
 | 5 | 4.7 a 4.10 | Triggers, bitácora, índices y normalización | 1 h |
 | 6 | 5 y 6 | Datos de demostración, Keycloak y tokens | 45 min |
-| 7 | 7, 8 y 11 | Redis, la app y autoevaluación completa | 45 min |
+| 7 | 7 y 8.1 a 8.3 | Redis, el código compartido, `admin` y `agenda` | 1 h 15 min |
+| 8 | 8.4 y 8.5 | El gateway y `clinical`: pacientes, notas y bitácora | 45 min |
+| 9 | 9 y 9b | La documentación y Kubernetes, hasta la réplica | 1 h |
+| 10 | 10 y 11 | Estado de los requisitos y autoevaluación completa | 45 min |
 
 En cada sesión: leer la parte, ejecutar los experimentos prediciendo el resultado, responder las preguntas de
 control y anotar dudas.

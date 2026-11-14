@@ -374,11 +374,12 @@ perfiles y sus permisos (`db/sql/02-grants.sql`) **no cambian**.
 
 | Schema | Tablas |
 |---|---|
-| `admin` | `clinics`, `users`, `roles`, `permissions`, `permissions_per_roles`, `countries`, `states`, `cities`, `addresses`, `clinics_addresses`, `specialties`, `specialties_per_professionals`, `services`, `services_per_professionals`, `professionals`, `professional_contacts`, `contact_types`, `severities`, `system_errors_logs` |
+| `admin` | `clinics`, `users`, `roles`, `permissions`, `permissions_per_roles`, `countries`, `states`, `cities`, `addresses`, `clinics_addresses`, `specialties`, `specialties_per_professionals`, `services`, `services_per_professionals`, `professionals`, `professional_contacts`, `contact_types` |
 | `agenda` | `professional_schedules`, `blockades`, `appointment_statuses`, `appointments` |
 | `clinical` | `patients`, `patient_contacts`, `genders`, `clinical_notes`, `event_types`, `data_objects`, `audit_logs` |
 
-Son las 30 tablas actuales de `db/sql/01-schema.sql`, sin cambios de columnas. **Implementado en la etapa 2.**
+Son las 28 tablas actuales de `db/sql/01-schema.sql`. **Implementado en la etapa 2.** Eran 30 hasta que se quitaron
+`system_errors_logs` y su catálogo `severities` (ver "Errores del sistema", más abajo).
 
 **Los schemas separan servicios, no clínicas.** No hay que confundirlos con el "esquema por tenant" que el README
 compara y descarta para el multi-tenancy. Las tres clínicas comparten las mismas tablas de cada schema, y el tenant
@@ -408,8 +409,20 @@ sigue siendo la columna `clinic_id`.
 - **Un perfil sin `USAGE` no ve el schema.** Para `mc_platform`, `patients` responde "la relación no existe" y
   `clinical.patients` responde "permiso denegado". En los dos casos no lee nada. Además, desde la etapa 3, un token
   de plataforma no llega a `agenda` ni a `clinical`.
-- **Errores del sistema.** Solo `admin` escribe en `system_errors_logs`. `agenda` y `clinical` escriben sus errores
-  en la salida estándar, que Kubernetes recoge y se consulta con `kubectl logs`.
+- **Errores del sistema: van a la salida estándar, no a la base.** Decidido por el equipo el 2026-11-13.
+  - **Problema.** El modelo tenía una tabla `system_errors_logs`, con su catálogo de gravedades `severities`, y los
+    perfiles tenían permiso de `INSERT` sobre ella. Pero ningún servicio escribía en ella, y la documentación
+    afirmaba que `admin` sí lo hacía.
+  - **Elegido.** Quitar las dos tablas. Los tres servicios escriben sus errores internos (5xx) en la salida
+    estándar del contenedor (`console.error` en su manejador de errores). Ahí se consultan con
+    `docker compose logs` y con `kubectl logs`, y es donde Kubernetes recoge los registros de cada contenedor. Los
+    errores del cliente (4xx) no se registran: son respuestas normales a una petición mal formada o no permitida.
+  - **Alternativa descartada.** Programar el registro en la tabla. Habría exigido una transacción aparte después
+    del `ROLLBACK`: dentro de la transacción que falla, el registro se borraría con todo lo demás, y PostgreSQL ni
+    siquiera acepta más instrucciones en una transacción abortada. Eran cambios en el manejador de errores de los
+    tres servicios a días de la entrega, para algo que el enunciado no pide.
+  - **Lo que se sacrifica.** Los errores no se pueden consultar con SQL. Para buscarlos hay que revisar los
+    registros de los contenedores.
 - **Contactos de pacientes.** `agenda` nunca lee `patient_contacts`. Leer datos de contacto obliga a registrar el
   acceso en la bitácora (RF18), que es de `clinical`.
 

@@ -52,13 +52,13 @@
 | Agenda | [professional_schedules](#professional_schedules), [blockades](#blockades), [professional_contacts](#professional_contacts) |
 | Pacientes | [genders](#genders), [patients](#patients), [contact_types](#contact_types), [patient_contacts](#patient_contacts) |
 | Citas y notas clínicas | [appointment_statuses](#appointment_statuses), [appointments](#appointments), [clinical_notes](#clinical_notes) |
-| Bitácoras | [event_types](#event_types), [data_objects](#data_objects), [audit_logs](#audit_logs), [severities](#severities), [system_errors_logs](#system_errors_logs) |
+| Bitácoras | [event_types](#event_types), [data_objects](#data_objects), [audit_logs](#audit_logs) |
 
 ## Tablas por schema
 
 | Schema | Descripción | Tablas |
 |---|---|---|
-| `admin` | Servicio admin (RF1–RF4): clínicas, usuarios, roles y permisos, geografía, especialidades, catálogo de servicios y profesionales. También el registro de errores del sistema. | [clinics](#clinics), [users](#users), [roles](#roles), [professionals](#professionals), [permissions](#permissions), [permissions_per_roles](#permissions_per_roles), [countries](#countries), [states](#states), [cities](#cities), [addresses](#addresses), [clinics_addresses](#clinics_addresses), [specialties](#specialties), [specialties_per_professionals](#specialties_per_professionals), [services](#services), [services_per_professionals](#services_per_professionals), [professional_contacts](#professional_contacts), [contact_types](#contact_types), [severities](#severities), [system_errors_logs](#system_errors_logs) |
+| `admin` | Servicio admin (RF1–RF4): clínicas, usuarios, roles y permisos, geografía, especialidades, catálogo de servicios y profesionales. | [clinics](#clinics), [users](#users), [roles](#roles), [professionals](#professionals), [permissions](#permissions), [permissions_per_roles](#permissions_per_roles), [countries](#countries), [states](#states), [cities](#cities), [addresses](#addresses), [clinics_addresses](#clinics_addresses), [specialties](#specialties), [specialties_per_professionals](#specialties_per_professionals), [services](#services), [services_per_professionals](#services_per_professionals), [professional_contacts](#professional_contacts), [contact_types](#contact_types) |
 | `agenda` | Servicio agenda (RF5–RF13, RF16, RF20, RF21): horarios de atención, bloqueos y citas. Es el schema de mayor carga. | [professional_schedules](#professional_schedules), [blockades](#blockades), [appointment_statuses](#appointment_statuses), [appointments](#appointments) |
 | `clinical` | Servicio clinical (RF14, RF15, RF18, RF19): pacientes y sus contactos, notas clínicas y la bitácora de auditoría append-only. | [genders](#genders), [patients](#patients), [patient_contacts](#patient_contacts), [clinical_notes](#clinical_notes), [event_types](#event_types), [data_objects](#data_objects), [audit_logs](#audit_logs) |
 
@@ -595,32 +595,6 @@
 - `trg_audit_logs_hash_chain` (BEFORE INSERT, por fila) → `clinical.audit_logs_set_hash()` — §9: toma candado consultivo por clínica y encadena prev_hash y row_hash con SHA-256 al insertar.
 - `trg_audit_logs_no_truncate` (BEFORE TRUNCATE, por sentencia) → `clinical.audit_logs_append_only()` — I6: rechaza TRUNCATE (MC005).
 
-### severities
-
-**Schema:** `admin`. Niveles de gravedad de system_errors_logs. Ids fijos.
-
-| Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
-|---|---|---|---|---|---|
-| `severity_id` | smallint | no |  | PK | Id fijo de la gravedad. |
-| `name` | varchar(50) | no |  | UK | Nombre técnico de la gravedad. |
-| `description` | varchar(100) | no |  |  | Descripción legible. |
-
-### system_errors_logs
-
-**Schema:** `admin`. Registro técnico de errores de la aplicación, para diagnóstico. No guarda datos de negocio ni pertenece a una clínica.
-
-| Columna | Tipo | Nulo | Por omisión | Llave | Descripción |
-|---|---|---|---|---|---|
-| `error_id` | bigint | no | identidad | PK | Identificador del error. |
-| `severity_id` | smallint | no |  | FK → admin.severities | Gravedad. |
-| `process_uuid` | uuid | sí |  |  | Id de correlación de la petición o proceso; opcional. |
-| `process_name` | varchar(100) | no |  |  | Proceso o ruta donde ocurrió (ej. POST /appointments). |
-| `step_name` | varchar(100) | sí |  |  | Paso dentro del proceso; opcional. |
-| `input_data` | jsonb | sí |  |  | Entrada que causó el error, sin datos sensibles; opcional. |
-| `error_message` | text | no |  |  | Mensaje del error. |
-| `metadata` | jsonb | sí |  |  | Detalles técnicos (ej. SQLSTATE); opcional. |
-| `created_at` | timestamptz | no | `now()` |  | Cuándo ocurrió el error. |
-
 ## Valores de los catálogos fijos
 
 Estos valores los inserta `db/sql/03-catalogs.sql` y forman parte del esquema: el código, los `CHECK` y los
@@ -677,15 +651,6 @@ citas) están en `db/sql/04-seed.sql` y no se listan aquí.
 |---|---|---|
 | 1 | `clinical_note` | Nota clínica de una cita |
 | 2 | `patient_contact` | Dato de contacto de un paciente |
-
-### Valores de severities
-
-| severity_id | name | Descripción |
-|---|---|---|
-| 1 | `info` | Evento informativo |
-| 2 | `warning` | Situación anómala que no interrumpe la operación |
-| 3 | `error` | Falla de una operación |
-| 4 | `critical` | Falla que compromete el servicio |
 
 ### Matriz de permisos (permissions y permissions_per_roles, RF17)
 
