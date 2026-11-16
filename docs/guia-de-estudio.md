@@ -1835,6 +1835,11 @@ igual que uno que no existe (I5). El contrato completo de cada ruta (entrada, sa
   - `schedules.manage`: el administrador maneja la agenda de cualquier profesional de su clínica.
   - `schedules.manage_own`: el profesional solo la suya; con la de otro recibe 403.
   - Para leer horarios y bloqueos alcanza también con los permisos de recepción.
+  - **El profesional solo lee los suyos** (cambio del 2026-11-15). Sin `professionalId` recibe su propio horario y
+    sus bloqueos, y con el de otro profesional recibe 403. En `GET /blockades/conflicts`, el `blockadeId` de un
+    bloqueo ajeno responde 404, igual que uno que no existe. La base no cambió: `mc_professional` sigue leyendo la
+    tabla entera, y el filtro por el `userId` del token lo pone la API (`readableProfessional`), como en las notas
+    clínicas.
 - **En hora local de la clínica.** El cliente manda la fecha y las horas como las ve la clínica (`2026-11-20`,
   `08:00`), y la base las convierte en un `tstzrange` de instantes absolutos con `AT TIME ZONE clinics.time_zone`. Se
   hace en PostgreSQL porque ya conoce las zonas horarias (incluidos los cambios de horario); en JavaScript habría que
@@ -1852,12 +1857,13 @@ igual que uno que no existe (I5). El contrato completo de cada ruta (entrada, sa
 - **Un bloqueo puede durar un día** (`date`) **o varios** (`startDate` y `endDate`), por ejemplo unas vacaciones.
 - **Toda escritura invalida la caché** con `bumpAgendaVersion`, después del COMMIT y con todos los días afectados. Si
   un bloque cambia de fecha, se invalidan el día viejo y el nuevo (I8).
-- **Las pruebas (`tests/integration/schedules-blockades.test.js`, 6):**
+- **Las pruebas (`tests/integration/schedules-blockades.test.js`, 7):**
   - una jornada partida creada por la API aparece en la disponibilidad, en hora local;
   - dos bloques cruzados responden 409;
   - recortar un bloque con citas responde `MC006`;
   - un bloqueo sobre una cita no la cancela y la lista en `conflicts`;
   - `manage_own` solo alcanza para la agenda propia;
+  - el profesional solo lee su propio horario y sus bloqueos (403 con el de otro, 404 con un bloqueo ajeno);
   - el aislamiento entre clínicas.
 
 **La reserva (RF9)** 🔴
@@ -2551,9 +2557,10 @@ quedaría pegado a la conexión y la siguiente petición, quizá de otro usuario
 
 <details><summary><b>3.3</b> Un profesional quiere ver los horarios de otro. ¿Lo impide la base?</summary>
 
-No: todos los profesionales usan `mc_professional`, que puede leer horarios. Ver horarios de colegas es razonable,
-pero *modificar* solo los propios (`schedules.manage_own`) lo debe filtrar la API comparando con el usuario del
-token.
+No: todos los profesionales usan `mc_professional`, que puede leer la tabla entera de horarios. Lo impide la API: con
+`schedules.manage_own`, `GET /schedules` y `GET /blockades` se fuerzan al `userId` del token, y pedir los de otro
+profesional responde 403. Modificarlos tampoco se puede (`assertCanManageProfessional`). Es el mismo patrón que las
+notas clínicas: la base da la tabla y la API filtra las filas.
 </details>
 
 <details><summary><b>3.4</b> Un token de plataforma llega a agenda. ¿Qué responde y quién lo decide?</summary>
