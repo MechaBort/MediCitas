@@ -320,6 +320,64 @@ test('RF5, RF6, RF17: un profesional con schedules.manage_own gestiona su propia
   assert.equal(receptionWrite.status, 403);
 });
 
+test('RF5, RF6, RF17: un profesional con schedules.manage_own solo lee su propio horario y sus propios bloqueos', async () => {
+  const day = await freeDay(db, [p1.professionalId, p2.professionalId]);
+
+  // El administrador le crea a Laura (p1) y a Andrés (p2) un bloque de horario y un bloqueo ese día.
+  const blockadeOf = {};
+  for (const prof of [p1, p2]) {
+    const schedule = await api('POST', '/schedules', {
+      token: adminSanJose,
+      body: { professionalId: prof.professionalId, date: day, startTime: '08:00', endTime: '12:00' },
+    });
+    assert.equal(schedule.status, 201, JSON.stringify(schedule.body));
+    const blockade = await api('POST', '/blockades', {
+      token: adminSanJose,
+      body: { professionalId: prof.professionalId, date: day, startTime: '09:00', endTime: '10:00', reason: 'Motivo personal' },
+    });
+    assert.equal(blockade.status, 201, JSON.stringify(blockade.body));
+    blockadeOf[prof.professionalId] = blockade.body.blockadeId;
+  }
+  const range = new URLSearchParams({ from: day, to: day });
+
+  // Sin professionalId, Laura recibe solo lo suyo, no lo de toda la clínica.
+  const schedules = await api('GET', `/schedules?${range}`, { token: lauraToken });
+  assert.equal(schedules.status, 200, JSON.stringify(schedules.body));
+  assert.ok(schedules.body.length > 0);
+  assert.ok(schedules.body.every((s) => s.professionalId === p1.professionalId), JSON.stringify(schedules.body));
+
+  const blockades = await api('GET', `/blockades?${range}`, { token: lauraToken });
+  assert.equal(blockades.status, 200, JSON.stringify(blockades.body));
+  assert.ok(blockades.body.some((b) => b.blockadeId === blockadeOf[p1.professionalId]));
+  assert.ok(blockades.body.every((b) => b.professionalId === p1.professionalId), JSON.stringify(blockades.body));
+
+  const conflicts = await api('GET', '/blockades/conflicts', { token: lauraToken });
+  assert.equal(conflicts.status, 200, JSON.stringify(conflicts.body));
+  assert.ok(conflicts.body.every((c) => c.professionalId === p1.professionalId), JSON.stringify(conflicts.body));
+
+  // Con el professionalId de Andrés: 403 en las tres rutas de lectura.
+  const ofAndres = new URLSearchParams({ professionalId: p2.professionalId });
+  for (const path of ['/schedules', '/blockades', '/blockades/conflicts']) {
+    const res = await api('GET', `${path}?${ofAndres}`, { token: lauraToken });
+    assert.equal(res.status, 403, `${path}: ${JSON.stringify(res.body)}`);
+  }
+
+  // El bloqueo de Andrés pedido por su id: 404, la misma respuesta que un bloqueo que no existe.
+  const byBlockade = await api(
+    'GET',
+    `/blockades/conflicts?${new URLSearchParams({ blockadeId: blockadeOf[p2.professionalId] })}`,
+    { token: lauraToken },
+  );
+  assert.equal(byBlockade.status, 404, JSON.stringify(byBlockade.body));
+
+  // Recepción sigue leyendo los de cualquier profesional de su clínica.
+  const reception = await api('GET', `/blockades?${new URLSearchParams({ professionalId: p2.professionalId, from: day, to: day })}`, {
+    token: receptionSanJose,
+  });
+  assert.equal(reception.status, 200, JSON.stringify(reception.body));
+  assert.ok(reception.body.some((b) => b.blockadeId === blockadeOf[p2.professionalId]));
+});
+
 test('RF5, RF6, I5: horarios y bloqueos de otra clínica responden 404 y no aceptan clinicId en el cuerpo', async () => {
   const day = await freeDay(db, [otherProf.professionalId]);
 

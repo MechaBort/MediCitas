@@ -1305,12 +1305,14 @@ servicios activos de la clínica cuya especialidad tenga el profesional) y `phon
 | 502 | El cambio de `isActive` se guardó en la base pero no en Keycloak; repetir la petición corrige la diferencia |
 
 ### Horarios de atención: `/schedules` (RF5)
-Permisos de escritura: `schedules.manage` (administrador de clínica: cualquier profesional de su clínica) o `schedules.manage_own` (profesional: únicamente su propio `userId`). Lectura: administrador de clínica, profesional y recepción.
+Permisos de escritura: `schedules.manage` (administrador de clínica: cualquier profesional de su clínica) o `schedules.manage_own` (profesional: únicamente su propio `userId`). Lectura: administrador de clínica y recepción, de cualquier profesional de su clínica; el profesional, solo la suya.
 
 Cada bloque se recibe en la fecha (`YYYY-MM-DD`) y hora (`HH:MM`, 24 h) locales de la clínica y se convierte a instantes absolutos con `clinics.time_zone`. Puede haber varios bloques en el mismo día (jornada partida), pero no pueden solaparse entre sí (`ex_schedules_overlap`).
 
 #### `GET /schedules?professionalId=…&from=…&to=…` (RF5)
 Lista los bloques de horario de la clínica del token, con filtros opcionales por profesional y rango de fechas (`YYYY-MM-DD`). Cada bloque: `{scheduleId, professionalId, date, startTime, endTime, start, end, createdAt, updatedAt}`.
+
+Un profesional con `schedules.manage_own` solo lee su propio horario: sin `professionalId` recibe sus bloques, y con el de otro profesional, 403 "Solo puede consultar su propio horario". El 403 se decide sin buscar al otro profesional, así que no revela si existe.
 
 #### `POST /schedules` (RF5)
 ```json
@@ -1329,7 +1331,7 @@ Lista los bloques de horario de la clínica del token, con filtros opcionales po
 |---|---|
 | 200 / 201 / 204 | Bloque listado, actualizado, creado o eliminado |
 | 400 | Body o parámetros inválidos, o `startTime >= endTime` |
-| 403 | Sin permiso, o un profesional con `schedules.manage_own` intenta gestionar el horario de otro profesional |
+| 403 | Sin permiso, o un profesional con `schedules.manage_own` intenta consultar o gestionar el horario de otro profesional |
 | 404 | El profesional o el bloque no existe o pertenece a otra clínica (I5) |
 | 409 | El bloque se solapa con otro del mismo profesional (`ex_schedules_overlap`), o tiene citas reservadas que quedarían fuera del horario (`MC006`, I3) |
 
@@ -1338,6 +1340,8 @@ Mismos permisos que `/schedules`. Un bloqueo retira disponibilidad (RF7) e impid
 
 #### `GET /blockades?professionalId=…&from=…&to=…` y `GET /blockades/conflicts?professionalId=…&blockadeId=…` (RF6)
 `GET /blockades` lista los bloqueos de la clínica junto con sus citas reservadas en conflicto (`conflicts`). `GET /blockades/conflicts` devuelve directamente las citas reservadas que se cruzan con algún bloqueo vigente.
+
+Un profesional con `schedules.manage_own` solo lee sus propios bloqueos y conflictos: sin `professionalId` recibe los suyos, con el de otro profesional recibe 403 "Solo puede consultar sus propios bloqueos", y con el `blockadeId` de un bloqueo de otro profesional recibe 404, la misma respuesta que para un bloqueo que no existe. Así no ve el motivo (`reason`) de las ausencias de sus colegas ni los pacientes de sus citas.
 
 #### `POST /blockades` y `DELETE /blockades/{blockadeId}` (RF6)
 Acepta `date` (bloqueo dentro de un mismo día) o el par `startDate` y `endDate` (ausencias de varios días):
@@ -1355,8 +1359,8 @@ Acepta `date` (bloqueo dentro de un mismo día) o el par `startDate` y `endDate`
 |---|---|
 | 200 / 201 / 204 | Lista de bloqueos/conflictos, bloqueo creado (con `conflicts: [...]`) o bloqueo eliminado |
 | 400 | Body o parámetros inválidos, o el fin del bloqueo no es posterior al inicio |
-| 403 | Sin permiso, o un profesional con `schedules.manage_own` intenta gestionar bloqueos de otro profesional |
-| 404 | El profesional o el bloqueo no existe o pertenece a otra clínica (I5) |
+| 403 | Sin permiso, o un profesional con `schedules.manage_own` intenta consultar o gestionar bloqueos de otro profesional |
+| 404 | El profesional o el bloqueo no existe o pertenece a otra clínica (I5); para un profesional, también el bloqueo de otro profesional en `GET /blockades/conflicts` |
 
 ### `POST /appointments` (RF9)
 Permiso `appointments.manage` (administrador de clínica y recepción). Reserva una cita en la clínica del token.

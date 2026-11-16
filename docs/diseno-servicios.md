@@ -996,6 +996,26 @@ Está explicada en [comparacion-arquitecturas.md](comparacion-arquitecturas.md#d
   detalle de las citas en conflicto, a cambio de que quien registra el bloqueo reciba de inmediato la lista de citas
   por reprogramar.
 
+**Decisión del 2026-11-15: el profesional solo lee su propio horario y sus bloqueos (RF5, RF6, RF17).**
+- **Problema.** `schedules.manage_own` solo se aplicaba al escribir. Al leer, `GET /schedules`, `GET /blockades` y
+  `GET /blockades/conflicts` usaban el `professionalId` que mandaba el cliente, o toda la clínica si no mandaba
+  ninguno. Un profesional veía el horario de sus colegas, el motivo (`reason`) de sus ausencias y los pacientes de sus
+  citas en conflicto. La matriz dice "solo los propios" para el profesional en horarios y bloqueos.
+- **Elegido.** `readableProfessional` (en `schedules.js` y `blockades.js`) decide qué profesional se consulta. Quien
+  solo tiene `schedules.manage_own` recibe siempre el suyo: sin `professionalId`, el propio; con el de otro, 403. El
+  403 se decide antes de buscar al otro profesional, así que no revela si existe (I5). En `GET /blockades/conflicts`,
+  el `blockadeId` de un bloqueo ajeno responde 404, como uno inexistente. Las consultas SQL no cambian: ya filtraban
+  por el profesional que se les pasa.
+- **Alternativas descartadas.**
+  - Quitarle a `mc_professional` el `SELECT` sobre las tablas: no podría leer ni su propio horario, porque sin RLS la
+    base solo da la tabla entera o nada.
+  - Un permiso nuevo (`schedules.read_own`): exigiría cambiar el catálogo y recrear la base, y `manage_own` ya expresa
+    "solo lo propio".
+  - Esconder solo el `reason`: dejaría visible el horario, que también es un dato personal.
+- **Lo que se sacrifica.** Un profesional ya no puede consultar el horario de un colega para coordinarse; lo hace la
+  recepción. Sigue viendo los espacios libres de sus colegas por RF7 y RF8, porque la matriz le da la disponibilidad
+  sin restricción y no se puede reducir.
+
 **Decisión de RF14, RF16 y RF18 (`feat/patients-history`): contactos auditados en el detalle del paciente, baja lógica de contactos e historial sin contactos en `agenda`.**
 - **Problema.** `RF14` gestiona pacientes y sus datos de contacto en `services/clinical`, y `RF18` exige registrar en
   `clinical.audit_logs` toda lectura y toda escritura de datos de contacto de pacientes. Además, `mc_clinic_admin` y

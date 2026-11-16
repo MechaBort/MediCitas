@@ -66,6 +66,22 @@ function assertCanManageProfessional(user, professionalId) {
   }
 }
 
+// Quien lee los bloqueos de toda la clínica: administrador y recepción (recepción reprograma los conflictos, RF6).
+function readsWholeClinic({ permissions }) {
+  return permissions.has('schedules.manage') || permissions.has('appointments.manage') || permissions.has('agenda.read');
+}
+
+// De qué profesional se leen los bloqueos. Quien solo tiene schedules.manage_own (el profesional) lee siempre los
+// suyos: sin professionalId recibe los propios, y con el de otro recibe 403. Los demás consultan el que pidan, o
+// toda la clínica (null). El 403 se decide antes de buscar al otro profesional, así que no revela si existe (I5).
+function readableProfessional(user, requested) {
+  if (readsWholeClinic(user)) return requested;
+  if (requested !== null && requested !== user.userId) {
+    throw new HttpError(403, 'Solo puede consultar sus propios bloqueos');
+  }
+  return user.userId;
+}
+
 function formatConflict(row) {
   return {
     appointmentId: Number(row.appointmentId),
@@ -129,7 +145,11 @@ const CONFLICTS_SQL = `
 // RF6: listar todas las citas reservadas de la clínica que caen dentro de algún bloqueo vigente,
 // para que recepción o administración puedan reprogramarlas.
 blockadesRouter.get('/conflicts', requireBlockadeRead, async (req, res) => {
-  const { professionalId = null, blockadeId = null } = parse(conflictsQuery, req.query);
+  const { professionalId: requested = null, blockadeId = null } = parse(conflictsQuery, req.query);
+  const professionalId = readableProfessional(req.user, requested);
+  // Para el profesional, el bloqueo pedido también debe ser suyo: el de otro responde el mismo 404 que uno que no
+  // existe.
+  const blockadeOwner = readsWholeClinic(req.user) ? null : req.user.userId;
   const { clinicId, dbRole } = req.user;
 
   const rows = await withTransaction(dbRole, async (client) => {
@@ -143,8 +163,9 @@ blockadesRouter.get('/conflicts', requireBlockadeRead, async (req, res) => {
     }
     if (blockadeId !== null) {
       const { rows: [blk] } = await client.query(
-        'SELECT 1 FROM blockades WHERE clinic_id = $1 AND blockade_id = $2',
-        [clinicId, blockadeId],
+        `SELECT 1 FROM blockades
+          WHERE clinic_id = $1 AND blockade_id = $2 AND ($3::int IS NULL OR professional_id = $3)`,
+        [clinicId, blockadeId, blockadeOwner],
       );
       if (!blk) throw new HttpError(404, 'Bloqueo no encontrado');
     }
@@ -176,10 +197,11 @@ const LIST_BLOCKADES_SQL = `
 
 // RF6: listar los bloqueos de la clínica, cada uno con las citas reservadas que entran en conflicto.
 blockadesRouter.get('/', requireBlockadeRead, async (req, res) => {
-  const { professionalId = null, from = null, to = null } = parse(listBlockadesQuery, req.query);
+  const { professionalId: requested = null, from = null, to = null } = parse(listBlockadesQuery, req.query);
   if (from && to && from > to) {
     throw new HttpError(400, 'La fecha final no puede ser anterior a la inicial');
   }
+  const professionalId = readableProfessional(req.user, requested);
   const { clinicId, dbRole } = req.user;
 
   const { blockades, conflictsByBlockade } = await withTransaction(dbRole, async (client) => {

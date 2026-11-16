@@ -38,7 +38,8 @@ const updateScheduleSchema = z.object({
   message: 'Debe enviar al menos un campo para actualizar',
 });
 
-// Lectura: administrador de clínica, profesional o recepción (agenda/disponibilidad).
+// Lectura: administrador de clínica, profesional o recepción (agenda/disponibilidad). El profesional solo
+// lee su propio horario (readableProfessional).
 function requireScheduleRead(req, res, next) {
   const { permissions } = req.user;
   if (
@@ -66,6 +67,20 @@ function assertCanManageProfessional(user, professionalId) {
   if (!user.permissions.has('schedules.manage') && professionalId !== user.userId) {
     throw new HttpError(403, 'Solo puede gestionar su propio horario');
   }
+}
+
+// De qué profesional se leen los horarios. Quien solo tiene schedules.manage_own (el profesional) lee siempre los
+// suyos: sin professionalId recibe los propios, y con el de otro recibe 403. Los demás consultan el que pidan, o
+// toda la clínica (null). El 403 se decide antes de buscar al otro profesional, así que no revela si existe (I5).
+function readableProfessional(user, requested) {
+  const { permissions } = user;
+  if (permissions.has('schedules.manage') || permissions.has('appointments.manage') || permissions.has('agenda.read')) {
+    return requested;
+  }
+  if (requested !== null && requested !== user.userId) {
+    throw new HttpError(403, 'Solo puede consultar su propio horario');
+  }
+  return user.userId;
 }
 
 function formatSchedule(row) {
@@ -102,10 +117,11 @@ const LIST_SCHEDULES_SQL = `
 
 // RF5: listar los bloques de horario de la clínica, opcionalmente por profesional y rango de fechas.
 schedulesRouter.get('/', requireScheduleRead, async (req, res) => {
-  const { professionalId = null, from = null, to = null } = parse(listSchedulesQuery, req.query);
+  const { professionalId: requested = null, from = null, to = null } = parse(listSchedulesQuery, req.query);
   if (from && to && from > to) {
     throw new HttpError(400, 'La fecha final no puede ser anterior a la inicial');
   }
+  const professionalId = readableProfessional(req.user, requested);
   const { clinicId, dbRole } = req.user;
 
   const rows = await withTransaction(dbRole, async (client) => {
